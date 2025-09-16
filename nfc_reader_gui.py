@@ -216,8 +216,7 @@ class NFCReaderGUI(QMainWindow):
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
-        # Disable automatic update checking - users will check manually via settings
-        self.update_manager.auto_check_timer.stop()
+        # Automatic update checking is disabled in UpdateManager - users check manually via settings
     
     def closeEvent(self, event):
         """Handle application close event"""

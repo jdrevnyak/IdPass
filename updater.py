@@ -288,13 +288,13 @@ class UpdateManager:
         self.update_downloader = None
         self.progress_dialog = None
         
-        # Auto-check for updates on startup (every 24 hours)
+        # Auto-check for updates on startup (every 24 hours) - DISABLED
         self.auto_check_timer = QTimer()
         self.auto_check_timer.timeout.connect(self.check_for_updates)
-        self.auto_check_timer.start(24 * 60 * 60 * 1000)  # 24 hours
+        # self.auto_check_timer.start(24 * 60 * 60 * 1000)  # 24 hours - DISABLED
         
-        # Check for updates 30 seconds after startup
-        QTimer.singleShot(30000, self.check_for_updates)
+        # Check for updates 30 seconds after startup - DISABLED
+        # QTimer.singleShot(30000, self.check_for_updates)  # DISABLED
     
     def check_for_updates(self, show_message=True):
         """Check for updates from GitHub"""
