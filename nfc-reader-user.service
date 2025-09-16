@@ -1,0 +1,16 @@
+[Unit]
+Description=NFC Reader Student Attendance System
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jdrevnyak/id
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/jdrevnyak/.Xauthority
+ExecStartPre=/bin/sleep 30
+ExecStart=/home/jdrevnyak/id/autostart_nfc.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target 

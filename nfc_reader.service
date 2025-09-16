@@ -1,0 +1,23 @@
+[Unit]
+Description=NFC Reader Student Attendance System
+After=network.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=jdrevnyak
+Group=jdrevnyak
+WorkingDirectory=/home/jdrevnyak/id
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/jdrevnyak/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStartPre=/bin/sleep 5
+ExecStart=/home/jdrevnyak/id/start_nfc_reader.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target 
