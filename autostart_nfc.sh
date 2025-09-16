@@ -22,6 +22,13 @@ echo "XDG_RUNTIME_DIR set: $XDG_RUNTIME_DIR" >> $LOG_FILE
 cd /home/jdrevnyak/id
 echo "Working directory: $(pwd)" >> $LOG_FILE
 
+# Check for and apply pending updates
+if [ -f "pending_update/apply_update.py" ]; then
+    echo "Applying pending update..." >> $LOG_FILE
+    python3 pending_update/apply_update.py >> $LOG_FILE 2>&1
+    echo "Update applied successfully" >> $LOG_FILE
+fi
+
 
 
 

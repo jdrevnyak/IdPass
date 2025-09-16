@@ -147,7 +147,8 @@ class UpdateDownloader(QThread):
             files_to_preserve = [
                 'student_attendance.db',
                 'bussed-2e3ff-926b7f131529.json',  # Google Sheets credentials
-                'requirements.txt'  # Keep current requirements
+                'requirements.txt',  # Keep current requirements
+                'nfc_reader_gui.py'  # Don't replace the currently running file
             ]
             
             # Copy preserved files to temp
@@ -158,29 +159,101 @@ class UpdateDownloader(QThread):
                 if src_file.exists():
                     shutil.copy2(src_file, preserve_temp / file_name)
             
-            # Remove old files (except preserved ones)
-            for item in self.install_path.iterdir():
-                if item.name not in files_to_preserve:
-                    try:
-                        if item.is_file():
-                            item.unlink()
-                        elif item.is_dir():
-                            shutil.rmtree(item)
-                    except Exception as e:
-                        print(f"[UPDATE] Warning: Could not remove {item.name}: {e}")
-                        # Continue with other files
+            # Create pending update directory
+            pending_update_dir = self.install_path / "pending_update"
+            if pending_update_dir.exists():
+                shutil.rmtree(pending_update_dir)
+            pending_update_dir.mkdir()
             
-            # Copy new files
+            print(f"[UPDATE] Creating pending update in: {pending_update_dir}")
+            
+            # Copy new files to pending update directory
             for item in source_dir.iterdir():
-                dest = self.install_path / item.name
+                dest = pending_update_dir / item.name
                 try:
                     if item.is_file():
                         shutil.copy2(item, dest)
                     elif item.is_dir():
                         shutil.copytree(item, dest)
+                    print(f"[UPDATE] Copied {item.name} to pending update")
                 except Exception as e:
                     print(f"[UPDATE] Warning: Could not copy {item.name}: {e}")
                     # Continue with other files
+            
+            # Create update script that will be run on next restart
+            update_script = pending_update_dir / "apply_update.py"
+            update_script.write_text(f'''#!/usr/bin/env python3
+"""
+Update script to apply pending updates on next restart
+"""
+import shutil
+import os
+from pathlib import Path
+
+def apply_update():
+    install_path = Path("{self.install_path}")
+    pending_dir = install_path / "pending_update"
+    
+    if not pending_dir.exists():
+        print("No pending update found")
+        return
+    
+    print("Applying pending update...")
+    
+    # Files to preserve
+    files_to_preserve = [
+        'student_attendance.db',
+        'bussed-2e3ff-926b7f131529.json',
+        'requirements.txt'
+    ]
+    
+    # Backup preserved files
+    preserve_temp = install_path / "temp_preserved"
+    preserve_temp.mkdir(exist_ok=True)
+    for file_name in files_to_preserve:
+        src_file = install_path / file_name
+        if src_file.exists():
+            shutil.copy2(src_file, preserve_temp / file_name)
+    
+    # Remove old files (except preserved ones)
+    for item in install_path.iterdir():
+        if item.name not in files_to_preserve and item.name != "pending_update":
+            try:
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+            except Exception as e:
+                print(f"Warning: Could not remove {{item.name}}: {{e}}")
+    
+    # Copy new files
+    for item in pending_dir.iterdir():
+        if item.name != "apply_update.py":
+            dest = install_path / item.name
+            try:
+                if item.is_file():
+                    shutil.copy2(item, dest)
+                elif item.is_dir():
+                    shutil.copytree(item, dest)
+            except Exception as e:
+                print(f"Warning: Could not copy {{item.name}}: {{e}}")
+    
+    # Restore preserved files
+    for file_name in files_to_preserve:
+        src_file = preserve_temp / file_name
+        if src_file.exists():
+            shutil.copy2(src_file, install_path / file_name)
+    
+    # Cleanup
+    shutil.rmtree(pending_dir)
+    shutil.rmtree(preserve_temp)
+    print("Update applied successfully!")
+
+if __name__ == "__main__":
+    apply_update()
+''')
+            
+            print(f"[UPDATE] Created update script: {update_script}")
             
             # Restore preserved files
             for file_name in files_to_preserve:
@@ -191,7 +264,7 @@ class UpdateDownloader(QThread):
             # Clean up
             shutil.rmtree(self.temp_dir)
             
-            self.status_update.emit("Update completed successfully!")
+            self.status_update.emit("Update downloaded successfully! Will be applied on restart.")
             self.download_complete.emit(True)
             
         except Exception as e:
@@ -277,14 +350,13 @@ class UpdateManager:
         
         if success:
             msg = QMessageBox(self.parent_window)
-            msg.setWindowTitle("Update Complete")
-            msg.setText("The application has been updated successfully!")
-            msg.setInformativeText("The application will restart to apply the changes.")
+            msg.setWindowTitle("Update Downloaded")
+            msg.setText("The update has been downloaded successfully!")
+            msg.setInformativeText("The update will be applied when you restart the application.")
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec_()
             
-            # Restart the application
-            self.restart_application()
+            # Don't restart automatically - let user restart when convenient
         else:
             QMessageBox.critical(self.parent_window, "Update Failed", 
                                "The update failed. Please try again later or contact support.")
