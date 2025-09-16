@@ -89,8 +89,8 @@ self.update_manager.check_for_updates(show_message=True)
 ```json
 {
     "current_version": "1.0.0",
-    "repo_owner": "your-github-username",
-    "repo_name": "id-project",
+    "repo_owner": "jdrevnyak",
+    "repo_name": "IdPass",
     "auto_check_interval_hours": 24,
     "backup_enabled": true,
     "preserve_files": [

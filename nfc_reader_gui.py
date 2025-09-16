@@ -212,9 +212,9 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.0",  # Update this version number for each release
-            repo_owner="your-github-username",  # Replace with your GitHub username
-            repo_name="id-project"  # Replace with your repository name
+            current_version="1.0.1",  # Update this version number for each release
+            repo_owner="jdrevnyak",  # Your GitHub username
+            repo_name="IdPass"  # Your repository name
         )
     
     def closeEvent(self, event):
