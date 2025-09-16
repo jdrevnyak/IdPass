@@ -1,0 +1,12 @@
+{
+    "current_version": "1.0.0",
+    "repo_owner": "jdrevnyak",
+    "repo_name": "IdPass",
+    "auto_check_interval_hours": 24,
+    "backup_enabled": true,
+    "preserve_files": [
+        "student_attendance.db",
+        "bussed-2e3ff-926b7f131529.json",
+        "requirements.txt"
+    ]
+}

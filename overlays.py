@@ -213,6 +213,18 @@ class SettingsOverlay(QWidget):
         force_sync_btn.clicked.connect(self.force_sync)
         sync_layout.addWidget(force_sync_btn)
         
+        # Check for updates button
+        check_updates_btn = QPushButton('Check for Updates')
+        check_updates_btn.setFont(QFont('Arial', 12))
+        check_updates_btn.setStyleSheet('QPushButton { background: #9b59b6; color: white; border-radius: 8px; padding: 6px 12px; } QPushButton:hover { background: #8e44ad; } QPushButton:pressed { background: #7d3c98; }')
+        check_updates_btn.clicked.connect(self.check_for_updates)
+        sync_layout.addWidget(check_updates_btn)
+        
+        # Current version display
+        self.current_version_label = QLabel("Current Version: Checking...")
+        self.current_version_label.setStyleSheet("color: #666; font-size: 11px; margin: 5px 0;")
+        sync_layout.addWidget(self.current_version_label)
+        
         vbox.addWidget(sync_group)
         
         # Add New Student button
@@ -343,6 +355,44 @@ class SettingsOverlay(QWidget):
             QMessageBox.information(self, "Sync Complete", "Data has been synced to Google Sheets successfully!")
         except Exception as e:
             QMessageBox.critical(self, "Sync Error", f"Error during sync: {str(e)}")
+    
+    def check_for_updates(self):
+        """Check for application updates"""
+        try:
+            # Check if update manager exists
+            if hasattr(self.parent, 'update_manager') and self.parent.update_manager:
+                # Disable the button temporarily to prevent multiple clicks
+                sender = self.sender()
+                if sender:
+                    sender.setEnabled(False)
+                    sender.setText("Checking...")
+                
+                # Check for updates (show_message=True to show result)
+                self.parent.update_manager.check_for_updates(show_message=True)
+                
+                # Re-enable the button after a delay
+                QTimer.singleShot(3000, lambda: self.restore_update_button(sender))
+            else:
+                QMessageBox.warning(self, "Update Check", "Update manager is not available.")
+        except Exception as e:
+            QMessageBox.critical(self, "Update Check Error", f"Error checking for updates: {str(e)}")
+    
+    def restore_update_button(self, button):
+        """Restore the update button to its original state"""
+        if button:
+            button.setEnabled(True)
+            button.setText("Check for Updates")
+    
+    def update_version_display(self):
+        """Update the current version display"""
+        try:
+            if hasattr(self.parent, 'update_manager') and self.parent.update_manager:
+                version = self.parent.update_manager.current_version
+                self.current_version_label.setText(f"Current Version: {version}")
+            else:
+                self.current_version_label.setText("Current Version: Unknown")
+        except Exception as e:
+            self.current_version_label.setText("Current Version: Error")
     
     def update_sync_status(self):
         """Update the sync status display"""
@@ -549,6 +599,7 @@ class SettingsOverlay(QWidget):
         self.update_connection_status()
         self.update_sync_status()
         self.update_active_breaks_status()
+        self.update_version_display()
 
     def mousePressEvent(self, event):
         # Dismiss if click outside the white box
