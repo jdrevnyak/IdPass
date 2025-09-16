@@ -100,7 +100,7 @@ class NFCReaderGUI(QMainWindow):
         button_layout = QVBoxLayout()
         button_layout.setAlignment(Qt.AlignVCenter)
         button_layout.setSpacing(32)
-        self.break_start_button = QPushButton("Bathroom!")
+        self.break_start_button = QPushButton("Bathroom")
         self.nurse_button = QPushButton("Nurse")
         for btn in [self.break_start_button, self.nurse_button]:
             btn.setMinimumSize(340, 80)
@@ -212,7 +212,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.0",  # Update this version number for each release
+            current_version="1.0.1",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )

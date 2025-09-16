@@ -139,7 +139,9 @@ class UpdateDownloader(QThread):
             
             # Backup current installation
             backup_dir = self.install_path.parent / f"id_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            print(f"[UPDATE] Creating backup at: {backup_dir}")
             shutil.copytree(self.install_path, backup_dir)
+            print(f"[UPDATE] Backup created successfully")
             
             # Install new files (preserve some files)
             files_to_preserve = [
@@ -159,18 +161,26 @@ class UpdateDownloader(QThread):
             # Remove old files (except preserved ones)
             for item in self.install_path.iterdir():
                 if item.name not in files_to_preserve:
-                    if item.is_file():
-                        item.unlink()
-                    elif item.is_dir():
-                        shutil.rmtree(item)
+                    try:
+                        if item.is_file():
+                            item.unlink()
+                        elif item.is_dir():
+                            shutil.rmtree(item)
+                    except Exception as e:
+                        print(f"[UPDATE] Warning: Could not remove {item.name}: {e}")
+                        # Continue with other files
             
             # Copy new files
             for item in source_dir.iterdir():
                 dest = self.install_path / item.name
-                if item.is_file():
-                    shutil.copy2(item, dest)
-                elif item.is_dir():
-                    shutil.copytree(item, dest)
+                try:
+                    if item.is_file():
+                        shutil.copy2(item, dest)
+                    elif item.is_dir():
+                        shutil.copytree(item, dest)
+                except Exception as e:
+                    print(f"[UPDATE] Warning: Could not copy {item.name}: {e}")
+                    # Continue with other files
             
             # Restore preserved files
             for file_name in files_to_preserve:
@@ -185,7 +195,10 @@ class UpdateDownloader(QThread):
             self.download_complete.emit(True)
             
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             print(f"[UPDATE] Error during update: {e}")
+            print(f"[UPDATE] Full error details:\n{error_details}")
             self.status_update.emit(f"Update failed: {str(e)}")
             self.download_complete.emit(False)
 
