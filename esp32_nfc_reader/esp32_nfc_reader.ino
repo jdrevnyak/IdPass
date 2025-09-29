@@ -13,10 +13,10 @@
  * MISO  -> GPIO 19
  * IRQ   -> Not connected
  * 
- * ESP32 -> Raspberry Pi UART:
- * GPIO 16 (RXD2) -> GPIO 14 (TXD) on RPi
- * GPIO 17 (TXD2) -> GPIO 15 (RXD) on RPi
- * GND             -> GND on RPi
+ * ESP32 -> Raspberry Pi UART (WORKING CONFIGURATION):
+ * GPIO 17 (TX2) -> GPIO 14 (TXD) on RPi (Physical Pin 8)
+ * GPIO 16 (RX2) -> GPIO 15 (RXD) on RPi (Physical Pin 10)
+ * GND           -> GND on RPi (Physical Pin 6)
  * 
  * Note: Make sure to enable UART on Raspberry Pi:
  * 1. sudo raspi-config -> Interface Options -> Serial Port
@@ -34,19 +34,20 @@
 #define SS_PIN      21    // Slave Select pin
 
 // UART pins for communication with Raspberry Pi
-#define RXD2 16
-#define TXD2 17
+// Using UART2 (TX2=GPIO17, RX2=GPIO16) - connected to RPi GPIO 14,15
+#define RXD2 16  // ESP32 RX2 pin
+#define TXD2 17  // ESP32 TX2 pin
 
 // Create MFRC522 instance
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
 void setup() {
-  // Initialize USB Serial for debugging (optional - can be removed for production)
+  // Initialize Serial for debugging (USB)
   Serial.begin(115200);
-  
-  // Initialize UART Serial for communication with Raspberry Pi
+
+  // Initialize UART2 for communication with Raspberry Pi
   Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
-  
+
   Serial.println("\n\nESP32 RC522 NFC Reader Starting...");
   Serial.println("Initializing SPI...");
   Serial2.println("ESP32 NFC Reader Ready");
@@ -154,6 +155,15 @@ void readCardData() {
 }
 
 void loop() {
+  // Check for incoming data from Raspberry Pi on UART2
+  if (Serial2.available()) {
+    String incomingData = Serial2.readStringUntil('\n');
+    incomingData.trim();
+    if (incomingData.length() > 0) {
+      Serial.println("Received from RPi: " + incomingData);
+    }
+  }
+  
   // Reset the loop if no new card present on the sensor/reader
   if (!mfrc522.PICC_IsNewCardPresent()) {
     return;
@@ -166,16 +176,15 @@ void loop() {
 
   // Card detected!
   Serial.println("\nFound an RFID card");
-  Serial.print("  UID Length: "); 
-  Serial.print(mfrc522.uid.size, DEC); 
-  Serial.println(" bytes");
-  
-  // Send to Raspberry Pi via UART
   Serial2.println("\nFound an RFID card");
-  Serial2.print("  UID Length: "); 
-  Serial2.print(mfrc522.uid.size, DEC); 
+
+  Serial.print("  UID Length: ");
+  Serial2.print("  UID Length: ");
+  Serial.print(mfrc522.uid.size, DEC);
+  Serial2.print(mfrc522.uid.size, DEC);
+  Serial.println(" bytes");
   Serial2.println(" bytes");
-  
+
   Serial.print("  UID Value: ");
   Serial2.print("  UID Value: ");
   for (byte i = 0; i < mfrc522.uid.size; i++) {

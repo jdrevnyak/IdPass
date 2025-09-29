@@ -212,7 +212,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.1",  # Update this version number for each release
+            current_version="1.0.2",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -233,11 +233,11 @@ class NFCReaderGUI(QMainWindow):
         print("[INFO] Starting ESP32 auto-connect...")
         try:
             # UART ports for Raspberry Pi (ESP32 connected via UART)
-            # Prefer serial alias first for portability across models
-            uart_ports = ['/dev/serial0', '/dev/ttyAMA10', '/dev/ttyS0', '/dev/ttyAMA0']
+            # Prioritize the working port first (/dev/ttyAMA0)
+            uart_ports = ['/dev/ttyAMA0', '/dev/serial0', '/dev/ttyAMA10', '/dev/ttyS0']
             # Fallback to USB ports if UART doesn't work
             usb_ports = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
-            
+
             # Try UART ports first
             all_ports = uart_ports + usb_ports
             print(f"[INFO] Will try ports: {all_ports}")
