@@ -25,7 +25,7 @@ cat > /home/jdrevnyak/id/update_config.json << EOF
     "backup_enabled": true,
     "preserve_files": [
         "student_attendance.db",
-        "bussed-2e3ff-926b7f131529.json",
+        "-2e3ff-926b7f131529.json",
         "requirements.txt"
     ]
 }

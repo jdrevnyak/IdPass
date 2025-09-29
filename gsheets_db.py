@@ -38,7 +38,7 @@ def get_period_for_time(dt):
 class GoogleSheetsDatabase:
     """Database class that uses Google Sheets for all data storage operations."""
     
-    def __init__(self, credentials_file="bussed-2e3ff-926b7f131529.json", spreadsheet_name="Student Attendance Tracking"):
+    def __init__(self, credentials_file="bussed-2e3ff-04a2f3a1396d.json", spreadsheet_name="Student Attendance Tracking"):
         self.credentials_file = credentials_file
         self.spreadsheet_name = spreadsheet_name
         self.gc = None
@@ -69,7 +69,7 @@ class GoogleSheetsDatabase:
                     print(f"Created new spreadsheet: {self.spreadsheet_name}")
                     
                     # Share with the service account email for editing
-                    self.spreadsheet.share('idcheck@bussed-2e3ff.iam.gserviceaccount.com', perm_type='user', role='writer')
+                    self.spreadsheet.share('idcheck@-2e3ff.iam.gserviceaccount.com', perm_type='user', role='writer')
                 except Exception as create_error:
                     print(f"Cannot create new spreadsheet (quota exceeded): {create_error}")
                     # Try to find any existing spreadsheet we can use

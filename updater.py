@@ -146,7 +146,7 @@ class UpdateDownloader(QThread):
             # Install new files (preserve some files)
             files_to_preserve = [
                 'student_attendance.db',
-                'bussed-2e3ff-926b7f131529.json',  # Google Sheets credentials
+                'bussed-2e3ff-04a2f3a1396d.json',  # Google Sheets credentials
                 'requirements.txt',  # Keep current requirements
                 'nfc_reader_gui.py'  # Don't replace the currently running file
             ]
@@ -203,7 +203,7 @@ def apply_update():
     # Files to preserve
     files_to_preserve = [
         'student_attendance.db',
-        'bussed-2e3ff-926b7f131529.json',
+        'bussed-2e3ff-04a2f3a1396d.json',
         'requirements.txt'
     ]
     

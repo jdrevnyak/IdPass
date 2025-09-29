@@ -708,7 +708,21 @@ class HybridDatabase(StudentDatabase):
             return True
         
         return False
-    
+
+    def get_students_on_break(self):
+        """Get list of students currently on bathroom break"""
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            SELECT s.id, s.student_id, s.name
+            FROM bathroom_breaks b
+            JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
+            WHERE b.break_end IS NULL
+        """)
+
+        results = cursor.fetchall()
+        return [(row[0], row[1], row[2]) for row in results]  # (nfc_uid, student_id, student_name)
+
     def get_students_without_nfc_uid(self):
         """Get list of students who don't have an NFC UID assigned"""
         cursor = self.conn.cursor()

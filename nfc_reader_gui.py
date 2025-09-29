@@ -179,6 +179,10 @@ class NFCReaderGUI(QMainWindow):
         self.auto_checkout_timer = QTimer(self)
         self.auto_checkout_timer.timeout.connect(self.db.auto_checkout_students)
         self.auto_checkout_timer.start(60 * 1000)  # every 60 seconds
+
+        # Auto-end breaks during passing periods
+        self._last_period = None
+        self._breaks_ended_this_passing = False
         
         # Initialize overlays
         self.keypad_overlay = KeypadOverlay(self)
@@ -415,9 +419,54 @@ class NFCReaderGUI(QMainWindow):
     def update_period_label(self):
         """Update the label under the clock with the current period/passing."""
         now = datetime.now()
-        label = self._determine_current_period(now)
+        current_period = self._determine_current_period(now)
+
+        # Auto-end all bathroom breaks during passing periods
+        if current_period == "Passing":
+            # Only end breaks once per passing period
+            if not self._breaks_ended_this_passing:
+                self._auto_end_all_breaks_during_passing()
+                self._breaks_ended_this_passing = True
+        else:
+            # Reset the flag when we leave passing period
+            self._breaks_ended_this_passing = False
+
+        self._last_period = current_period
+
         # Render period text inside clock instead of separate label
-        self.analog_clock.set_overlay_text(label)
+        self.analog_clock.set_overlay_text(current_period)
+
+    def _auto_end_all_breaks_during_passing(self):
+        """Automatically end all active bathroom breaks during passing periods"""
+        try:
+            print("[AUTO] Passing period detected - checking for active bathroom breaks to end...")
+
+            # Get all students currently on break
+            active_breaks = self.db.get_students_on_break()
+
+            if active_breaks:
+                print(f"[AUTO] Found {len(active_breaks)} students on active breaks - ending them...")
+
+                for student_info in active_breaks:
+                    nfc_uid, student_id, student_name = student_info
+
+                    # End the bathroom break
+                    success, message = self.db.end_bathroom_break(nfc_uid or student_id)
+
+                    if success:
+                        print(f"[AUTO] Ended break for {student_name} (ID: {student_id})")
+                    else:
+                        print(f"[AUTO] Failed to end break for {student_name}: {message}")
+
+                # Update GPIO LED status after ending breaks
+                self.update_gpio_led_status()
+                print(f"[AUTO] Ended {len(active_breaks)} bathroom breaks during passing period")
+
+            else:
+                print("[AUTO] No active breaks to end during passing period")
+
+        except Exception as e:
+            print(f"[AUTO] Error auto-ending breaks during passing: {e}")
 
     def _determine_current_period(self, now: datetime) -> str:
         """Return the current period label or Passing/Before/After School."""
