@@ -40,7 +40,9 @@ class OTAUpdateManager:
         self.preserve_files = [
             'student_attendance.db',
             'firebase-service-account.json',
-            'requirements.txt'
+            'requirements.txt',
+            'main.py',  # Critical launcher file
+            'version.txt'  # Version tracking file
         ]
 
         # Create necessary directories
@@ -139,7 +141,7 @@ class OTAUpdateManager:
             self.logger(f"Downloading release from {download_url}")
 
             # Download the zip file
-            response = requests.get(download_url, stream=True)
+            response = requests.get(download_url, stream=True, timeout=30)
             response.raise_for_status()
 
             zip_path = self.deposit_dir / "release.zip"
@@ -164,24 +166,42 @@ class OTAUpdateManager:
                 return False
 
             source_dir = extracted_dirs[0]
+            self.logger(f"Found source directory: {source_dir.name}")
 
             # Move files from the extracted directory to deposit
+            # Skip files that should be preserved locally
+            files_copied = 0
             for item in source_dir.iterdir():
+                if item.name in self.preserve_files:
+                    self.logger(f"Skipping preserved file: {item.name}")
+                    continue
+
                 dest_path = self.deposit_dir / item.name
-                if item.is_file():
-                    shutil.copy2(item, dest_path)
-                elif item.is_dir():
-                    if dest_path.exists():
-                        shutil.rmtree(dest_path)
-                    shutil.copytree(item, dest_path)
+                try:
+                    if item.is_file():
+                        shutil.copy2(item, dest_path)
+                        files_copied += 1
+                    elif item.is_dir():
+                        if dest_path.exists():
+                            shutil.rmtree(dest_path)
+                        shutil.copytree(item, dest_path)
+                        files_copied += 1
+                except Exception as e:
+                    self.logger(f"Error copying {item.name}: {e}", "ERROR")
 
             # Clean up
             shutil.rmtree(temp_extract_dir)
             zip_path.unlink()
 
-            self.logger("Release downloaded and extracted to deposit directory")
+            self.logger(f"Release downloaded and extracted to deposit directory ({files_copied} files copied)")
             return True
 
+        except requests.exceptions.RequestException as e:
+            self.logger(f"Network error downloading release: {e}", "ERROR")
+            return False
+        except zipfile.BadZipFile as e:
+            self.logger(f"Invalid zip file: {e}", "ERROR")
+            return False
         except Exception as e:
             self.logger(f"Error downloading release: {e}", "ERROR")
             return False
