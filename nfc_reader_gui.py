@@ -38,9 +38,10 @@ class NFCReaderGUI(QMainWindow):
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
-    # School day schedule (local time)
+    # Default school day schedule (local time)
     # Each tuple: (label, (start_hour, start_minute), (end_hour, end_minute))
-    SCHEDULE = [
+    # This will be overridden by periods loaded from Firebase
+    DEFAULT_SCHEDULE = [
         ("Period 1", (7, 25), (8, 8)),
         ("Period 2", (8, 12), (9, 1)),
         ("Period 3", (9, 5), (9, 48)),
@@ -62,8 +63,11 @@ class NFCReaderGUI(QMainWindow):
         # Initialize GPIO for LED control
         self.setup_gpio()
         
-        # Initialize Hybrid database (local SQLite + Google Sheets sync)
+        # Initialize Hybrid database (local SQLite + Firebase sync)
         self.db = HybridDatabase(sync_interval_minutes=10)
+        
+        # Load school schedule from Firebase (or use default)
+        self.SCHEDULE = self.load_schedule_from_firebase()
         
         # Serial connection variables
         self.serial_port = None
@@ -216,11 +220,36 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.3",  # Update this version number for each release
+            current_version="1.0.4",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
         # Automatic update checking is disabled in UpdateManager - users check manually via settings
+    
+    def load_schedule_from_firebase(self):
+        """Load school schedule from Firebase, or use default if unavailable"""
+        try:
+            periods = self.db.get_periods()
+            if periods:
+                # Convert Firebase periods format to GUI format
+                # Firebase: (name, time(h,m), time(h,m))
+                # GUI: (name, (h, m), (h, m))
+                schedule = []
+                for period_name, start_time, end_time in periods:
+                    schedule.append((
+                        period_name,
+                        (start_time.hour, start_time.minute),
+                        (end_time.hour, end_time.minute)
+                    ))
+                print(f"[GUI] Loaded {len(schedule)} periods from Firebase")
+                return schedule
+            else:
+                print("[GUI] No periods found in Firebase, using default schedule")
+                return self.DEFAULT_SCHEDULE
+        except Exception as e:
+            print(f"[GUI] Error loading schedule from Firebase: {e}")
+            print("[GUI] Using default schedule")
+            return self.DEFAULT_SCHEDULE
     
     def closeEvent(self, event):
         """Handle application close event"""

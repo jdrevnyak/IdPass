@@ -33,6 +33,7 @@ class HybridDatabase(StudentDatabase):
         self.sync_thread = None
         self.sync_active = True
         self.last_sync = None
+        self.periods = []  # Will be loaded from Firebase
         
         # Track changes that need to be synced
         self.pending_changes = {
@@ -53,6 +54,9 @@ class HybridDatabase(StudentDatabase):
             self.firebase_db = FirebaseDatabase()
             print("[HYBRID] Firebase Firestore connection established")
             
+            # Load periods from Firebase
+            self.load_periods_from_firebase()
+            
             # Perform initial sync from Firestore to local DB
             self.initial_sync_from_firestore()
             
@@ -62,6 +66,22 @@ class HybridDatabase(StudentDatabase):
         except Exception as e:
             print(f"[HYBRID] Warning: Could not connect to Firebase Firestore: {e}")
             print("[HYBRID] Running in local-only mode")
+    
+    def load_periods_from_firebase(self):
+        """Load school periods from Firebase Firestore"""
+        if not self.firebase_db:
+            return
+        
+        try:
+            self.periods = self.firebase_db.get_periods()
+            print(f"[HYBRID] Loaded {len(self.periods)} periods from Firebase")
+        except Exception as e:
+            print(f"[HYBRID] Error loading periods from Firebase: {e}")
+            self.periods = []
+    
+    def get_periods(self):
+        """Get the current periods configuration"""
+        return self.periods if self.periods else []
     
     def initial_sync_from_firestore(self):
         """Load all data from Firebase Firestore into local SQLite database"""

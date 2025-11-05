@@ -42,7 +42,9 @@ class FirebaseDatabase:
     def __init__(self, credentials_file="firebase-service-account.json"):
         self.credentials_file = credentials_file
         self.db = None
+        self.periods = PERIODS  # Default periods, will be updated from Firestore
         self.init_connection()
+        self.load_periods()  # Load periods from Firestore on init
     
     def init_connection(self):
         """Initialize connection to Firebase Firestore"""
@@ -66,6 +68,46 @@ class FirebaseDatabase:
         except Exception as e:
             print(f"[FIREBASE] Error connecting to Firestore: {e}")
             raise
+    
+    def load_periods(self):
+        """Load school periods from Firestore"""
+        try:
+            doc = self.db.collection('settings').document('periods').get()
+            if doc.exists:
+                data = doc.to_dict()
+                periods_data = data.get('periods', [])
+                
+                # Convert periods data to the format used by the app
+                # Each period has: name, start_hour, start_minute, end_hour, end_minute
+                self.periods = []
+                for period in periods_data:
+                    name = period.get('name', '')
+                    start_time = time(period['start_hour'], period['start_minute'])
+                    end_time = time(period['end_hour'], period['end_minute'])
+                    self.periods.append((name, start_time, end_time))
+                
+                print(f"[FIREBASE] Loaded {len(self.periods)} periods from Firestore")
+            else:
+                # No periods in Firestore, use defaults
+                print("[FIREBASE] No periods found in Firestore, using default periods")
+                self.periods = PERIODS
+                
+        except Exception as e:
+            print(f"[FIREBASE] Error loading periods: {e}")
+            print("[FIREBASE] Using default periods")
+            self.periods = PERIODS
+    
+    def get_periods(self) -> List[Tuple]:
+        """Get the current periods configuration"""
+        return self.periods
+    
+    def get_period_for_time(self, dt):
+        """Get the current period and end time for a given datetime"""
+        t = dt.time()
+        for period, start, end in self.periods:
+            if start <= t <= end:
+                return period, end
+        return None, None
     
     def add_student(self, nfc_uid: str, student_id: str, name: str) -> bool:
         """Add a new student to the Firestore database"""
@@ -187,7 +229,7 @@ class FirebaseDatabase:
             
             # Determine scheduled check-out time
             current_time = datetime.now()
-            _, period_end = get_period_for_time(current_time)
+            _, period_end = self.get_period_for_time(current_time)
             scheduled_check_out = None
             if period_end:
                 scheduled_check_out = current_time.replace(

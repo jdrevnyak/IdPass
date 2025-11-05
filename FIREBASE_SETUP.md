@@ -222,6 +222,54 @@ The app will:
 - Check you're in the correct directory (`/webapp`)
 - Verify `firebase.json` exists
 
+## Configuring School Periods
+
+The Hall Pass System now supports dynamic configuration of school periods through the web dashboard!
+
+### Accessing Settings
+
+1. Log into the web dashboard
+2. Click on "Settings" in the navigation menu
+3. You'll see the "School Period Configuration" section
+
+### Configuring Periods
+
+1. **View Current Periods**: The page will display all currently configured periods (or default periods if none are set)
+2. **Edit Periods**: Modify the name, start time, or end time of any period directly in the form
+3. **Add Periods**: Click "+ Add Period" to create a new period
+4. **Remove Periods**: Click "Remove" next to any period to delete it
+5. **Save Changes**: Click "💾 Save All Changes" to save your configuration to Firebase
+
+### Period Format
+
+Each period includes:
+- **Period Name**: e.g., "Period 1", "Homeroom", "Lunch"
+- **Start Time**: Hour (0-23) and Minute (0-59) in 24-hour format
+- **End Time**: Hour (0-23) and Minute (0-59) in 24-hour format
+
+The times will display in 12-hour format (AM/PM) below each period for easy verification.
+
+### How It Works
+
+- Period configurations are stored in Firebase Firestore under `settings/periods`
+- The Python desktop app loads periods from Firebase on startup
+- Changes will take effect on the next app restart
+- The web dashboard automatically reflects the configured periods
+
+### Default Periods
+
+If no periods are configured in Firebase, the system uses these defaults:
+- Period 1: 7:25 AM - 8:08 AM
+- Period 2: 8:12 AM - 8:55 AM
+- Homeroom: 8:55 AM - 9:01 AM
+- Period 3: 9:05 AM - 9:48 AM
+- Period 4: 9:52 AM - 10:35 AM
+- Period 5: 10:39 AM - 11:22 AM
+- Period 6: 11:26 AM - 12:09 PM
+- Period 7: 12:13 PM - 12:56 PM
+- Period 8: 1:00 PM - 1:43 PM
+- Period 9: 1:47 PM - 2:30 PM
+
 ## Data Migration / Importing Students from CSV
 
 ### Option 1: Using the Web Dashboard (Recommended)
