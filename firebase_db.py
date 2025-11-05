@@ -277,7 +277,7 @@ class FirebaseDatabase:
         """Check if student is currently on a bathroom break"""
         try:
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', '').limit(1).get()
+            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', None).limit(1).get()
             
             return len(list(query)) > 0
             
@@ -312,7 +312,7 @@ class FirebaseDatabase:
             
             # Check if any OTHER student is currently on a break
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('break_end', '==', '').get()
+            query = breaks_ref.where('break_end', '==', None).get()
             
             for doc in query:
                 data = doc.to_dict()
@@ -329,8 +329,8 @@ class FirebaseDatabase:
                 'student_uid': identifier,
                 'student_name': student_name,
                 'break_start': current_time,
-                'break_end': '',
-                'duration_minutes': ''
+                'break_end': None,
+                'duration_minutes': None
             }
             
             breaks_ref.add(break_data)
@@ -345,7 +345,7 @@ class FirebaseDatabase:
         """End a bathroom break for a student"""
         try:
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', '').get()
+            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', None).get()
             
             for doc in query:
                 data = doc.to_dict()
@@ -373,7 +373,7 @@ class FirebaseDatabase:
         """Check if student is currently at the nurse"""
         try:
             nurse_ref = self.db.collection('nurse_visits')
-            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', '').limit(1).get()
+            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).limit(1).get()
             
             return len(list(query)) > 0
             
@@ -386,14 +386,14 @@ class FirebaseDatabase:
         try:
             # Check for active bathroom breaks
             breaks_ref = self.db.collection('bathroom_breaks')
-            breaks_query = breaks_ref.where('break_end', '==', '').limit(1).get()
+            breaks_query = breaks_ref.where('break_end', '==', None).limit(1).get()
             
             if len(list(breaks_query)) > 0:
                 return True
             
             # Check for active nurse visits
             nurse_ref = self.db.collection('nurse_visits')
-            nurse_query = nurse_ref.where('visit_end', '==', '').limit(1).get()
+            nurse_query = nurse_ref.where('visit_end', '==', None).limit(1).get()
             
             if len(list(nurse_query)) > 0:
                 return True
@@ -490,8 +490,8 @@ class FirebaseDatabase:
                 'student_uid': identifier,
                 'student_name': student_name,
                 'visit_start': current_time,
-                'visit_end': '',
-                'duration_minutes': ''
+                'visit_end': None,
+                'duration_minutes': None
             }
             
             self.db.collection('nurse_visits').add(visit_data)
@@ -507,7 +507,7 @@ class FirebaseDatabase:
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
             nurse_ref = self.db.collection('nurse_visits')
-            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', '').get()
+            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).get()
             
             for doc in query:
                 data = doc.to_dict()
@@ -626,18 +626,18 @@ class FirebaseDatabase:
             return []
     
     def auto_checkout_students(self):
-        """Automatically check out students whose scheduled_check_out time has passed"""
+        """Automatically check out students whose scheduled_check_out time has passed and end active breaks/visits at period end"""
         try:
             now = datetime.now()
             today = now.date().isoformat()
-            
+
             attendance_ref = self.db.collection('attendance')
             query = attendance_ref.where('date', '==', today).where('check_out', '==', '').get()
-            
+
             for doc in query:
                 data = doc.to_dict()
                 scheduled_check_out = data.get('scheduled_check_out')
-                
+
                 if scheduled_check_out:
                     try:
                         scheduled_dt = datetime.fromisoformat(scheduled_check_out)
@@ -647,9 +647,94 @@ class FirebaseDatabase:
                     except Exception as e:
                         print(f"[FIREBASE] Error processing scheduled checkout for {data['student_uid']}: {e}")
                         continue
-                        
+
+            # Also auto-end bathroom breaks and nurse visits at period end
+            self._auto_end_breaks_and_visits_at_period_end()
+
         except Exception as e:
             print(f"[FIREBASE] Error in auto-checkout: {e}")
+
+    def _auto_end_breaks_and_visits_at_period_end(self):
+        """Automatically end active bathroom breaks and nurse visits when the current period ends"""
+        try:
+            now = datetime.now()
+
+            # Get current period end time
+            _, period_end_time = self.get_period_for_time(now)
+
+            if not period_end_time:
+                # No current period or period end time available
+                return
+
+            # Create period end datetime for today
+            period_end_dt = datetime.combine(now.date(), period_end_time)
+
+            # Only auto-end if we're past the period end time
+            if now <= period_end_dt:
+                return
+
+            print(f"[FIREBASE AUTO-END] Period ended at {period_end_dt}, auto-ending active breaks and visits...")
+
+            # Auto-end bathroom breaks
+            breaks_ref = self.db.collection('bathroom_breaks')
+            breaks_query = breaks_ref.where('break_end', '==', None).get()
+
+            for doc in breaks_query:
+                try:
+                    data = doc.to_dict()
+                    break_start_str = data.get('break_start')
+
+                    if break_start_str:
+                        # Parse break start time
+                        break_start_dt = datetime.fromisoformat(break_start_str)
+
+                        # Only auto-end breaks that started before the period end
+                        if break_start_dt < period_end_dt:
+                            # Calculate duration
+                            duration = int((period_end_dt - break_start_dt).total_seconds() / 60)
+
+                            # End the break
+                            doc.reference.update({
+                                'break_end': period_end_dt.isoformat(),
+                                'duration_minutes': duration
+                            })
+
+                            print(f"[FIREBASE AUTO-END] Ended bathroom break for {data['student_uid']} (duration: {duration}min)")
+
+                except Exception as e:
+                    print(f"[FIREBASE AUTO-END] Error ending bathroom break: {e}")
+
+            # Auto-end nurse visits
+            nurse_ref = self.db.collection('nurse_visits')
+            nurse_query = nurse_ref.where('visit_end', '==', None).get()
+
+            for doc in nurse_query:
+                try:
+                    data = doc.to_dict()
+                    visit_start_str = data.get('visit_start')
+
+                    if visit_start_str:
+                        # Parse visit start time
+                        visit_start_dt = datetime.fromisoformat(visit_start_str)
+
+                        # Only auto-end visits that started before the period end
+                        if visit_start_dt < period_end_dt:
+                            # Calculate duration
+                            duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+
+                            # End the visit
+                            doc.reference.update({
+                                'visit_end': period_end_dt.isoformat(),
+                                'duration_minutes': duration
+                            })
+
+                            print(f"[FIREBASE AUTO-END] Ended nurse visit for {data['student_uid']} (duration: {duration}min)")
+
+                except Exception as e:
+                    print(f"[FIREBASE AUTO-END] Error ending nurse visit: {e}")
+
+        except Exception as e:
+            print(f"[FIREBASE AUTO-END] Error in auto-end breaks and visits: {e}")
     
     def import_from_csv(self, csv_file: str) -> Dict:
         """Import students from CSV file"""

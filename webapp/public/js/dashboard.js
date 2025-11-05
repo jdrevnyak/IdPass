@@ -89,7 +89,7 @@ function calculateDuration(start, end = null) {
 
 // Listen for students currently on bathroom breaks
 db.collection('bathroom_breaks')
-  .where('break_end', '==', '')
+  .where('break_end', '==', null)
   .onSnapshot((snapshot) => {
     const studentsOut = [];
     snapshot.forEach((doc) => {

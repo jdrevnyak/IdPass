@@ -428,8 +428,8 @@ class HybridDatabase(StudentDatabase):
                     'student_uid': student_uid,
                     'student_name': student_name,
                     'break_start': break_start or '',
-                    'break_end': break_end or '',
-                    'duration_minutes': duration or ''
+                    'break_end': break_end,  # Keep as None for active breaks
+                    'duration_minutes': duration  # Keep as None for active breaks
                 }
                 
                 # Use a composite key for the document ID
@@ -459,8 +459,8 @@ class HybridDatabase(StudentDatabase):
                     'student_uid': student_uid,
                     'student_name': student_name,
                     'visit_start': visit_start or '',
-                    'visit_end': visit_end or '',
-                    'duration_minutes': duration or ''
+                    'visit_end': visit_end,  # Keep as None for active visits
+                    'duration_minutes': duration  # Keep as None for active visits
                 }
                 
                 # Use a composite key for the document ID
@@ -666,14 +666,108 @@ class HybridDatabase(StudentDatabase):
         }
     
     def auto_checkout_students(self):
-        """Automatically check out students whose scheduled_check_out time has passed"""
+        """Automatically check out students whose scheduled_check_out time has passed and end active breaks/visits at period end"""
         result = super().auto_checkout_students()
+
         # Track changes if any students were checked out
         cursor = self.conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM attendance WHERE date = date('now') AND check_out IS NOT NULL")
         if cursor.fetchone()[0] > 0:
             self._track_change('attendance')
+
+        # Also auto-end bathroom breaks and nurse visits at period end
+        self._auto_end_breaks_and_visits_at_period_end()
+
         return result
+
+    def _auto_end_breaks_and_visits_at_period_end(self):
+        """Automatically end active bathroom breaks and nurse visits when the current period ends"""
+        try:
+            now = datetime.now()
+
+            # Get current period end time
+            _, period_end_time = self.firebase_db.get_period_for_time(now) if self.firebase_db else (None, None)
+
+            if not period_end_time:
+                # No current period or period end time available
+                return
+
+            # Create period end datetime for today
+            period_end_dt = datetime.combine(now.date(), period_end_time)
+
+            # Only auto-end if we're past the period end time
+            if now <= period_end_dt:
+                return
+
+            print(f"[AUTO-END] Period ended at {period_end_dt}, auto-ending active breaks and visits...")
+
+            # Auto-end bathroom breaks
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT b.id, b.student_uid, b.break_start
+                FROM bathroom_breaks b
+                WHERE b.break_end IS NULL
+            """)
+
+            active_breaks = cursor.fetchall()
+            for break_id, student_uid, break_start_str in active_breaks:
+                try:
+                    # Parse break start time
+                    break_start_dt = datetime.fromisoformat(break_start_str.replace(' ', 'T'))
+
+                    # Only auto-end breaks that started before the period end
+                    if break_start_dt < period_end_dt:
+                        # Calculate duration
+                        duration = int((period_end_dt - break_start_dt).total_seconds() / 60)
+
+                        # End the break
+                        cursor.execute("""
+                            UPDATE bathroom_breaks
+                            SET break_end = ?, duration_minutes = ?
+                            WHERE id = ?
+                        """, (period_end_dt.strftime("%Y-%m-%d %H:%M:%S.%f"), duration, break_id))
+
+                        print(f"[AUTO-END] Ended bathroom break for {student_uid} (duration: {duration}min)")
+                        self._track_change('bathroom_breaks')
+
+                except Exception as e:
+                    print(f"[AUTO-END] Error ending bathroom break {break_id}: {e}")
+
+            # Auto-end nurse visits
+            cursor.execute("""
+                SELECT n.id, n.student_uid, n.visit_start
+                FROM nurse_visits n
+                WHERE n.visit_end IS NULL
+            """)
+
+            active_visits = cursor.fetchall()
+            for visit_id, student_uid, visit_start_str in active_visits:
+                try:
+                    # Parse visit start time
+                    visit_start_dt = datetime.fromisoformat(visit_start_str.replace(' ', 'T'))
+
+                    # Only auto-end visits that started before the period end
+                    if visit_start_dt < period_end_dt:
+                        # Calculate duration
+                        duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+
+                        # End the visit
+                        cursor.execute("""
+                            UPDATE nurse_visits
+                            SET visit_end = ?, duration_minutes = ?
+                            WHERE id = ?
+                        """, (period_end_dt.strftime("%Y-%m-%d %H:%M:%S.%f"), duration, visit_id))
+
+                        print(f"[AUTO-END] Ended nurse visit for {student_uid} (duration: {duration}min)")
+                        self._track_change('nurse_visits')
+
+                except Exception as e:
+                    print(f"[AUTO-END] Error ending nurse visit {visit_id}: {e}")
+
+            self.conn.commit()
+
+        except Exception as e:
+            print(f"[AUTO-END] Error in auto-end breaks and visits: {e}")
     
     def clear_attendance_data(self):
         """Clear all attendance records from local database"""
