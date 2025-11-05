@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Students - Hall Pass System</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-container">
+            <div class="logo">🎓 Hall Pass System</div>
+            <ul class="nav-links">
+                <li><a href="dashboard.html">Dashboard</a></li>
+                <li><a href="students.html">Students</a></li>
+                <li><a href="analytics.html">Analytics</a></li>
+                <li><a href="attendance.html">Attendance</a></li>
+                <li><a href="settings.html">Settings</a></li>
+            </ul>
+            <div class="user-info">
+                <span id="userEmail"></span>
+                <button onclick="signOut()">Sign Out</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+            <h1>Students</h1>
+            <div style="display: flex; gap: 1rem;">
+                <button class="btn btn-primary" onclick="showImportModal()">📥 Import CSV</button>
+                <button class="btn btn-secondary" onclick="showAddStudentModal()">+ Add Student</button>
+            </div>
+        </div>
+
+        <!-- Search and Filter -->
+        <div class="card">
+            <div class="filter-bar">
+                <input type="text" id="searchInput" placeholder="Search by name or ID..." onkeyup="filterStudents()">
+            </div>
+        </div>
+
+        <!-- Students Table -->
+        <div class="card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Student ID</th>
+                        <th>Name</th>
+                        <th>NFC UID</th>
+                        <th>Created At</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="studentsTableBody">
+                    <tr>
+                        <td colspan="5" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Add/Edit Student Modal -->
+    <div id="studentModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Add Student</h2>
+                <button class="close" onclick="closeStudentModal()">&times;</button>
+            </div>
+            <form id="studentForm">
+                <input type="hidden" id="studentDocId">
+                <div class="form-group">
+                    <label for="studentId">Student ID *</label>
+                    <input type="text" id="studentId" required>
+                </div>
+                <div class="form-group">
+                    <label for="studentName">Name *</label>
+                    <input type="text" id="studentName" required>
+                </div>
+                <div class="form-group">
+                    <label for="nfcUid">NFC UID</label>
+                    <input type="text" id="nfcUid" placeholder="Optional - can be assigned later">
+                </div>
+                <div id="formError" class="alert alert-error" style="display: none;"></div>
+                <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button type="button" class="btn" onclick="closeStudentModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Import CSV Modal -->
+    <div id="importModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Import Students from CSV</h2>
+                <button class="close" onclick="closeImportModal()">&times;</button>
+            </div>
+            <div>
+                <div class="alert alert-warning">
+                    <strong>CSV Format:</strong> Your CSV should have columns: NFC_UID, Student_ID, Name, Created_At<br>
+                    NFC_UID and Created_At are optional. Student_ID and Name are required.
+                </div>
+                <div class="form-group">
+                    <label for="csvFile">Select CSV File</label>
+                    <input type="file" id="csvFile" accept=".csv" style="padding: 0.5rem;">
+                </div>
+                <div id="importProgress" style="display: none; margin: 1rem 0;">
+                    <div class="loading"></div>
+                    <p style="text-align: center; margin-top: 1rem;">Importing students...</p>
+                </div>
+                <div id="importResults" style="display: none;"></div>
+                <div style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 1rem;">
+                    <button type="button" class="btn" onclick="closeImportModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="importCSV()">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    
+    <!-- Firebase Configuration -->
+    <script src="js/firebase-config.js"></script>
+    
+    <!-- Students Logic -->
+    <script src="js/students.js"></script>
+</body>
+</html>
+

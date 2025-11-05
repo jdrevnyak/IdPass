@@ -1,0 +1,2 @@
+This is a test file to verify the OTA update system is working.
+If you see this file in the main directory, the OTA system successfully applied the update!

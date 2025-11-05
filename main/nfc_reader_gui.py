@@ -220,7 +220,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.5",  # Update this version number for each release
+            current_version="1.0.4",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -745,14 +745,19 @@ class NFCReaderGUI(QMainWindow):
             self.show_prompt_message(f"Card linked to {student_name}\nCheck-in: {message}")
 
 
-if __name__ == '__main__':
+def main():
+    """Main entry point for the application"""
     app = QApplication(sys.argv)
     window = NFCReaderGUI()
     window.show()
-    
+
     try:
         sys.exit(app.exec_())
     except KeyboardInterrupt:
         print("\n[INFO] Application interrupted by user")
         window.cleanup_gpio()
         sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
