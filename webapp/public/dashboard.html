@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Hall Pass System</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-container">
+            <div class="logo">🎓 Hall Pass System</div>
+            <ul class="nav-links">
+                <li><a href="dashboard.html">Dashboard</a></li>
+                <li><a href="students.html">Students</a></li>
+                <li><a href="analytics.html">Analytics</a></li>
+                <li><a href="attendance.html">Attendance</a></li>
+            </ul>
+            <div class="user-info">
+                <span id="userEmail"></span>
+                <button onclick="signOut()">Sign Out</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1>Dashboard</h1>
+        
+        <!-- Current Period -->
+        <div class="card">
+            <div class="card-title">Current Period</div>
+            <div id="currentPeriod" style="font-size: 1.5rem; color: var(--secondary-color);"></div>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="studentsOutCount">-</div>
+                <div class="stat-label">Students Currently Out</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalBreaksToday">-</div>
+                <div class="stat-label">Total Bathroom Breaks Today</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgBreakDuration">-</div>
+                <div class="stat-label">Avg Break Duration (min)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalNurseVisits">-</div>
+                <div class="stat-label">Nurse Visits Today</div>
+            </div>
+        </div>
+
+        <!-- Students Currently Out -->
+        <div class="card">
+            <div class="card-title">Students Currently Out</div>
+            <div id="studentsOutList"></div>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="card">
+            <div class="card-title">Recent Activity</div>
+            <table id="recentActivity">
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Type</th>
+                        <th>Start Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="recentActivityBody">
+                    <tr>
+                        <td colspan="4" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    
+    <!-- Firebase Configuration -->
+    <script src="js/firebase-config.js"></script>
+    
+    <!-- Dashboard Logic -->
+    <script src="js/dashboard.js"></script>
+</body>
+</html>
+

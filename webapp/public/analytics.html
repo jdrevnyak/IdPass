@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics - Hall Pass System</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-container">
+            <div class="logo">🎓 Hall Pass System</div>
+            <ul class="nav-links">
+                <li><a href="dashboard.html">Dashboard</a></li>
+                <li><a href="students.html">Students</a></li>
+                <li><a href="analytics.html">Analytics</a></li>
+                <li><a href="attendance.html">Attendance</a></li>
+            </ul>
+            <div class="user-info">
+                <span id="userEmail"></span>
+                <button onclick="signOut()">Sign Out</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1>Analytics</h1>
+
+        <!-- Date Range Selector -->
+        <div class="card">
+            <div class="filter-bar">
+                <div class="form-group">
+                    <label for="startDate">Start Date</label>
+                    <input type="date" id="startDate">
+                </div>
+                <div class="form-group">
+                    <label for="endDate">End Date</label>
+                    <input type="date" id="endDate">
+                </div>
+                <button class="btn btn-secondary" onclick="loadAnalytics()" style="align-self: flex-end;">Load Data</button>
+            </div>
+        </div>
+
+        <!-- Summary Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalBreaks">-</div>
+                <div class="stat-label">Total Bathroom Breaks</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgBreakTime">-</div>
+                <div class="stat-label">Average Break Time (min)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalNurseVisits">-</div>
+                <div class="stat-label">Total Nurse Visits</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgNurseTime">-</div>
+                <div class="stat-label">Average Nurse Time (min)</div>
+            </div>
+        </div>
+
+        <!-- Bathroom Breaks Breakdown -->
+        <div class="card">
+            <div class="card-title">Bathroom Breaks by Student</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Total Breaks</th>
+                        <th>Total Time Out (min)</th>
+                        <th>Average Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="breaksBreakdownBody">
+                    <tr>
+                        <td colspan="4" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Nurse Visits Breakdown -->
+        <div class="card">
+            <div class="card-title">Nurse Visits by Student</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Total Visits</th>
+                        <th>Total Time (min)</th>
+                        <th>Average Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="nurseBreakdownBody">
+                    <tr>
+                        <td colspan="4" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Export Button -->
+        <div class="card">
+            <button class="btn btn-primary" onclick="exportData()">📥 Export to CSV</button>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    
+    <!-- Firebase Configuration -->
+    <script src="js/firebase-config.js"></script>
+    
+    <!-- Analytics Logic -->
+    <script src="js/analytics.js"></script>
+</body>
+</html>
+
