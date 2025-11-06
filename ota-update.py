@@ -168,12 +168,15 @@ class OTAUpdateManager:
             source_dir = extracted_dirs[0]
             self.logger(f"Found source directory: {source_dir.name}")
 
-            # Check if the extracted directory has a 'main' subdirectory
-            # This happens with GitHub releases that have both root files and a main/ folder
+            # IMPORTANT: Never use main/ subdirectory as source
+            # The GitHub release should contain files at the root level
+            # If there's a main/ subdirectory, it's a mistake in the repo structure
             main_subdir = source_dir / "main"
             if main_subdir.exists() and main_subdir.is_dir():
-                self.logger(f"Detected main/ subdirectory in release, using that as source")
-                source_dir = main_subdir
+                self.logger(f"WARNING: Detected main/ subdirectory in release!", "WARN")
+                self.logger(f"This indicates the GitHub repository has an incorrect structure.", "WARN")
+                self.logger(f"The repository should have files at ROOT level, not in a main/ folder.", "WARN")
+                self.logger(f"Ignoring the main/ subdirectory and using root-level files.", "WARN")
 
             # Move files from the extracted directory to deposit
             # Skip files that should be preserved locally
@@ -183,9 +186,15 @@ class OTAUpdateManager:
                     self.logger(f"Skipping preserved file: {item.name}")
                     continue
 
-                # Skip the main/ subdirectory to prevent nesting
+                # CRITICAL: Skip the main/ subdirectory to prevent nesting
+                # The main/ folder is a runtime directory and should never be in the release
                 if item.name == 'main' and item.is_dir():
-                    self.logger(f"Skipping main/ subdirectory to prevent nesting")
+                    self.logger(f"Skipping main/ subdirectory (runtime directory, should not be in release)")
+                    continue
+
+                # Skip hidden files and system directories
+                if item.name.startswith('.'):
+                    self.logger(f"Skipping hidden file/directory: {item.name}")
                     continue
 
                 dest_path = self.deposit_dir / item.name
@@ -240,6 +249,13 @@ class OTAUpdateManager:
         """Copy directory tree while preserving certain files"""
         for item in src.iterdir():
             if item.name.startswith('.'):  # Skip hidden files
+                continue
+
+            # CRITICAL: Never copy a 'main' directory into the main directory
+            # This would create nested main/main/ structure
+            if item.name == 'main' and item.is_dir():
+                self.logger(f"WARNING: Skipping 'main/' directory to prevent nesting!", "WARN")
+                self.logger(f"The 'main/' folder should not be in the deposit directory.", "WARN")
                 continue
 
             dest_path = dst / item.name

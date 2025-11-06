@@ -1,3 +1,49 @@
-student_attendance.db
-bussed-2e3ff-04a2f3a1396d.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OTA Update System - Runtime Directories
+main/
+deposit/
+logs/
+
+# Database
+*.db
+*.db-journal
+
+# Configuration (contains sensitive data)
 firebase-service-account.json
+*-service-account.json
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*~
+backup_*/
+
+# Temporary files
+*.tmp
+*.temp
+
