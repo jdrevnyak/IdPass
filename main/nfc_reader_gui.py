@@ -145,7 +145,7 @@ class NFCReaderGUI(QMainWindow):
         main_layout.addLayout(center_layout)
         
         # Prompt at the bottom
-        self.prompt = QLabel("Tap yooo ID or enter ID number")
+        self.prompt = QLabel("Tap your ID or enter ID number")
         self.prompt.setAlignment(Qt.AlignCenter)
         self.prompt.setFont(QFont('Arial', 24))
         self.prompt.setStyleSheet("color: #23405a; background: #f5f7fa; padding: 24px 0 24px 0; border-bottom-left-radius: 24px; border-bottom-right-radius: 24px;")
@@ -220,7 +220,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.11",  # Update this version number for each release
+            current_version="1.0.12",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
