@@ -17,19 +17,19 @@ from pathlib import Path
 def get_current_version():
     """Get current version from nfc_reader_gui.py"""
     try:
-        with open('nfc_reader_gui.py', 'r') as f:
+        with open('main/nfc_reader_gui.py', 'r') as f:
             content = f.read()
             match = re.search(r'current_version="([^"]+)"', content)
             if match:
                 return match.group(1)
     except FileNotFoundError:
-        print("Error: nfc_reader_gui.py not found")
+        print("Error: main/nfc_reader_gui.py not found")
     return "1.0.0"
 
 def update_version(new_version):
     """Update version in nfc_reader_gui.py"""
     try:
-        with open('nfc_reader_gui.py', 'r') as f:
+        with open('main/nfc_reader_gui.py', 'r') as f:
             content = f.read()
         
         # Update version
@@ -39,7 +39,7 @@ def update_version(new_version):
             content
         )
         
-        with open('nfc_reader_gui.py', 'w') as f:
+        with open('main/nfc_reader_gui.py', 'w') as f:
             f.write(content)
         
         print(f"✅ Updated version to {new_version}")
@@ -129,7 +129,7 @@ def main():
         print(f"📄 Release notes created: RELEASE_NOTES_v{new_version}.md")
         
         print(f"\n📋 Next steps:")
-        print(f"1. Review the updated nfc_reader_gui.py")
+        print(f"1. Review the updated main/nfc_reader_gui.py")
         print(f"2. Review RELEASE_NOTES_v{new_version}.md")
         print(f"3. Commit changes: git add . && git commit -m 'Version {new_version}'")
         print(f"4. Push to GitHub: git push origin main")
@@ -142,7 +142,7 @@ def main():
         print(f"   - Click 'Publish release'")
         
         print(f"\n🧪 Test the release:")
-        print(f"1. Run: python3 nfc_reader_gui.py")
+        print(f"1. Run: python3 main/nfc_reader_gui.py")
         print(f"2. Check if update notification appears")
         print(f"3. Test the update process")
         
