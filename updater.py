@@ -151,6 +151,13 @@ class UpdateDownloader(QThread):
             source_dir = extracted_dirs[0]
             print(f"[UPDATE] Found source directory: {source_dir.name}")
             
+            # Check if the extracted directory has a 'main' subdirectory
+            # This happens with GitHub releases that have both root files and a main/ folder
+            main_subdir = source_dir / "main"
+            if main_subdir.exists() and main_subdir.is_dir():
+                print(f"[UPDATE] Detected main/ subdirectory in release, using that as source")
+                source_dir = main_subdir
+            
             self.status_update.emit("Copying files to deposit folder...")
             
             # Copy files from extracted directory to deposit folder
@@ -158,6 +165,11 @@ class UpdateDownloader(QThread):
             for item in source_dir.iterdir():
                 if item.name.startswith('.'):
                     continue  # Skip hidden files
+                
+                # Skip the main/ subdirectory to prevent nesting
+                if item.name == 'main' and item.is_dir():
+                    print(f"[UPDATE] Skipping main/ subdirectory to prevent nesting")
+                    continue
                     
                 dest_path = self.deposit_dir / item.name
                 try:

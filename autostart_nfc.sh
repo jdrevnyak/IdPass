@@ -57,5 +57,5 @@ else
     fi
 fi
 
-echo "Starting NFC Reader application at: $(date)" >> $LOG_FILE
-python nfc_reader_gui.py >> $LOG_FILE 2>&1 
+echo "Starting NFC Reader application via OTA system at: $(date)" >> $LOG_FILE
+python ota-update.py >> $LOG_FILE 2>&1 

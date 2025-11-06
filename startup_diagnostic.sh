@@ -78,10 +78,10 @@ if [ -f "venv/bin/activate" ]; then
     echo "PyQt5 check:" >> $LOG_FILE
     python -c "import PyQt5; print('PyQt5 available')" >> $LOG_FILE 2>&1
     
-    echo "Attempting to start application..." >> $LOG_FILE
-    python nfc_reader_gui.py >> $LOG_FILE 2>&1 &
+    echo "Attempting to start application via OTA system..." >> $LOG_FILE
+    python ota-update.py >> $LOG_FILE 2>&1 &
     APP_PID=$!
-    echo "Application started with PID: $APP_PID" >> $LOG_FILE
+    echo "OTA update system started with PID: $APP_PID" >> $LOG_FILE
     
     # Wait a bit and check if it's still running
     sleep 5

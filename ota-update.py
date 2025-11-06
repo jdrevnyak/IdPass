@@ -168,12 +168,24 @@ class OTAUpdateManager:
             source_dir = extracted_dirs[0]
             self.logger(f"Found source directory: {source_dir.name}")
 
+            # Check if the extracted directory has a 'main' subdirectory
+            # This happens with GitHub releases that have both root files and a main/ folder
+            main_subdir = source_dir / "main"
+            if main_subdir.exists() and main_subdir.is_dir():
+                self.logger(f"Detected main/ subdirectory in release, using that as source")
+                source_dir = main_subdir
+
             # Move files from the extracted directory to deposit
             # Skip files that should be preserved locally
             files_copied = 0
             for item in source_dir.iterdir():
                 if item.name in self.preserve_files:
                     self.logger(f"Skipping preserved file: {item.name}")
+                    continue
+
+                # Skip the main/ subdirectory to prevent nesting
+                if item.name == 'main' and item.is_dir():
+                    self.logger(f"Skipping main/ subdirectory to prevent nesting")
                     continue
 
                 dest_path = self.deposit_dir / item.name
@@ -275,12 +287,46 @@ class OTAUpdateManager:
             raise Exception(f"No main.py found in {self.main_dir}")
 
         self.logger("Starting main application...")
+        
+        # Use the same Python that's running this script (important for venv)
         python_exe = sys.executable
+        self.logger(f"Using Python: {python_exe}")
 
         try:
             # Start the main application as a subprocess
-            process = subprocess.Popen([python_exe, str(self.main_script)], cwd=str(self.main_dir))
+            # Set PYTHONPATH to include parent directory for imports
+            env = os.environ.copy()
+            # Add both the project root and main directory to Python path
+            python_path = f"{self.project_root}:{self.main_dir}"
+            if 'PYTHONPATH' in env:
+                python_path = f"{python_path}:{env['PYTHONPATH']}"
+            env['PYTHONPATH'] = python_path
+            
+            process = subprocess.Popen(
+                [python_exe, str(self.main_script)], 
+                cwd=str(self.main_dir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
             self.logger(f"Main application started with PID: {process.pid}")
+            
+            # Log subprocess output in a separate thread
+            import threading
+            def log_output():
+                try:
+                    for line in process.stdout:
+                        line_stripped = line.rstrip()
+                        if line_stripped:  # Only log non-empty lines
+                            self.logger(f"[APP] {line_stripped}")
+                except Exception:
+                    pass
+            
+            output_thread = threading.Thread(target=log_output, daemon=True)
+            output_thread.start()
+            
             return process
         except Exception as e:
             self.logger(f"Failed to start main application: {e}", "ERROR")
@@ -331,6 +377,16 @@ class OTAUpdateManager:
                 self.logger("No main.py in main directory and no files in deposit!", "ERROR")
                 self.logger("Please add your application files to the 'deposit' folder.", "ERROR")
                 sys.exit(1)
+        else:
+            # Main.py exists - check if there are pending updates on startup
+            if self.check_for_updates():
+                self.logger("Pending updates detected in deposit folder on startup!")
+                self.logger("Applying updates before starting application...")
+                success = self.apply_update()
+                if success:
+                    self.logger("Updates applied successfully!")
+                else:
+                    self.logger("Update application failed, starting with current version", "ERROR")
 
         # Start the main application
         main_process = None

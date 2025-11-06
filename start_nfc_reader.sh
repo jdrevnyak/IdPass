@@ -18,7 +18,7 @@ if [ ! -f "venv/bin/activate" ]; then
     exit 1
 fi
 
-# Activate virtual environment and start the application
+# Activate virtual environment and start the OTA update system
 source venv/bin/activate
-echo "Starting NFC Reader application..."
-python nfc_reader_gui.py 
+echo "Starting NFC Reader application via OTA system..."
+python ota-update.py 
