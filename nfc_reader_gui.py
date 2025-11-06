@@ -126,7 +126,7 @@ class NFCReaderGUI(QMainWindow):
         ''')
         self.nurse_button.setStyleSheet('''
             QPushButton {
-                background-color: #23405a;
+                background-color: #F54927;
                 color: white;
                 border-radius: 24px;
                 border: none;
