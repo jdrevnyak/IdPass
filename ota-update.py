@@ -168,33 +168,65 @@ class OTAUpdateManager:
             source_dir = extracted_dirs[0]
             self.logger(f"Found source directory: {source_dir.name}")
 
-            # IMPORTANT: Never use main/ subdirectory as source
-            # The GitHub release should contain files at the root level
-            # If there's a main/ subdirectory, it's a mistake in the repo structure
+            # Check if there's a main/ subdirectory - use files from inside it
             main_subdir = source_dir / "main"
             if main_subdir.exists() and main_subdir.is_dir():
-                self.logger(f"WARNING: Detected main/ subdirectory in release!", "WARN")
-                self.logger(f"This indicates the GitHub repository has an incorrect structure.", "WARN")
-                self.logger(f"The repository should have files at ROOT level, not in a main/ folder.", "WARN")
-                self.logger(f"Ignoring the main/ subdirectory and using root-level files.", "WARN")
+                self.logger(f"Detected main/ subdirectory in release - using files from inside it")
+                source_dir = main_subdir
+            else:
+                self.logger(f"No main/ subdirectory - using root-level files")
+
+            # Files/directories to skip during update
+            skip_patterns = [
+                '__pycache__',  # Python cache
+                '*.pyc',        # Compiled Python files
+                'venv',         # Virtual environment
+                'logs',         # Log files
+                'deposit',      # Deposit folder
+                '.git',         # Git directory
+                '.DS_Store',    # Mac system files
+                'Thumbs.db',    # Windows system files
+            ]
+            
+            # Infrastructure files that shouldn't be updated (should stay at root)
+            infrastructure_files = [
+                'ota-update.py',
+                'diagnose_ota.py',
+                'setup_ota_updates.sh',
+                'setup_nfc_service.sh',
+                'start_nfc_reader.sh',
+                'autostart_nfc.sh',
+                'startup_diagnostic.sh',
+                'nfc_reader.service',
+                'nfc-reader-user.service',
+                'cleanup_duplicates.sh',
+            ]
 
             # Move files from the extracted directory to deposit
-            # Skip files that should be preserved locally
+            # Skip files that should be preserved or are infrastructure
             files_copied = 0
             for item in source_dir.iterdir():
+                # Skip hidden files and system files
+                if item.name.startswith('.'):
+                    continue
+                
+                # Skip cache directories
+                if item.name in skip_patterns:
+                    self.logger(f"Skipping system file/directory: {item.name}")
+                    continue
+                
+                # Skip compiled Python cache files
+                if item.name.endswith('.pyc'):
+                    continue
+                
+                # Skip preserved files
                 if item.name in self.preserve_files:
                     self.logger(f"Skipping preserved file: {item.name}")
                     continue
-
-                # CRITICAL: Skip the main/ subdirectory to prevent nesting
-                # The main/ folder is a runtime directory and should never be in the release
-                if item.name == 'main' and item.is_dir():
-                    self.logger(f"Skipping main/ subdirectory (runtime directory, should not be in release)")
-                    continue
-
-                # Skip hidden files and system directories
-                if item.name.startswith('.'):
-                    self.logger(f"Skipping hidden file/directory: {item.name}")
+                
+                # Skip infrastructure files
+                if item.name in infrastructure_files:
+                    self.logger(f"Skipping infrastructure file: {item.name}")
                     continue
 
                 dest_path = self.deposit_dir / item.name
