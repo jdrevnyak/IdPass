@@ -21,7 +21,6 @@ ENV/
 *~
 
 # OTA Update System - Runtime Directories
-main/
 deposit/
 logs/
 
