@@ -80,22 +80,35 @@ class UpdateChecker(QThread):
 
 
 class UpdateDownloader(QThread):
-    """Thread for downloading and installing updates"""
+    """Thread for downloading updates to the deposit folder"""
     
     progress_update = pyqtSignal(int)    # Download progress percentage
     status_update = pyqtSignal(str)     # Status message
     download_complete = pyqtSignal(bool) # True if successful
     
-    def __init__(self, update_info, install_path="/home/jdrevnyak/id"):
+    def __init__(self, update_info, deposit_dir):
         super().__init__()
         self.update_info = update_info
-        self.install_path = Path(install_path)
+        self.deposit_dir = Path(deposit_dir)
         self.temp_dir = Path("/tmp/id_update")
         
     def run(self):
-        """Download and install the update"""
+        """Download update and extract to deposit folder"""
         try:
             self.status_update.emit("Starting update download...")
+            
+            # Clear deposit directory first
+            if self.deposit_dir.exists():
+                for item in self.deposit_dir.iterdir():
+                    try:
+                        if item.is_file():
+                            item.unlink()
+                        elif item.is_dir():
+                            shutil.rmtree(item)
+                    except Exception as e:
+                        print(f"[UPDATE] Warning: Could not clear {item.name}: {e}")
+            else:
+                self.deposit_dir.mkdir(parents=True)
             
             # Create temp directory
             if self.temp_dir.exists():
@@ -107,7 +120,8 @@ class UpdateDownloader(QThread):
             zip_path = self.temp_dir / "update.zip"
             
             self.status_update.emit("Downloading update...")
-            response = requests.get(download_url, stream=True)
+            print(f"[UPDATE] Downloading from: {download_url}")
+            response = requests.get(download_url, stream=True, timeout=60)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
@@ -122,6 +136,7 @@ class UpdateDownloader(QThread):
                             progress = int((downloaded / total_size) * 100)
                             self.progress_update.emit(progress)
             
+            print(f"[UPDATE] Downloaded {downloaded} bytes")
             self.status_update.emit("Extracting update...")
             
             # Extract the update
@@ -134,139 +149,52 @@ class UpdateDownloader(QThread):
                 raise Exception("No extracted directory found")
             
             source_dir = extracted_dirs[0]
+            print(f"[UPDATE] Found source directory: {source_dir.name}")
             
-            self.status_update.emit("Installing update...")
+            self.status_update.emit("Copying files to deposit folder...")
             
-            # Backup current installation
-            backup_dir = self.install_path.parent / f"id_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            print(f"[UPDATE] Creating backup at: {backup_dir}")
-            shutil.copytree(self.install_path, backup_dir)
-            print(f"[UPDATE] Backup created successfully")
-            
-            # Install new files (preserve some files)
-            files_to_preserve = [
-                'student_attendance.db',
-                'bussed-2e3ff-04a2f3a1396d.json',  # Google Sheets credentials
-                'requirements.txt',  # Keep current requirements
-                'nfc_reader_gui.py'  # Don't replace the currently running file
-            ]
-            
-            # Copy preserved files to temp
-            preserve_temp = self.temp_dir / "preserved"
-            preserve_temp.mkdir()
-            for file_name in files_to_preserve:
-                src_file = self.install_path / file_name
-                if src_file.exists():
-                    shutil.copy2(src_file, preserve_temp / file_name)
-            
-            # Create pending update directory
-            pending_update_dir = self.install_path / "pending_update"
-            if pending_update_dir.exists():
-                shutil.rmtree(pending_update_dir)
-            pending_update_dir.mkdir()
-            
-            print(f"[UPDATE] Creating pending update in: {pending_update_dir}")
-            
-            # Copy new files to pending update directory
+            # Copy files from extracted directory to deposit folder
+            files_copied = 0
             for item in source_dir.iterdir():
-                dest = pending_update_dir / item.name
+                if item.name.startswith('.'):
+                    continue  # Skip hidden files
+                    
+                dest_path = self.deposit_dir / item.name
                 try:
                     if item.is_file():
-                        shutil.copy2(item, dest)
+                        shutil.copy2(item, dest_path)
+                        files_copied += 1
+                        print(f"[UPDATE] Copied file: {item.name}")
                     elif item.is_dir():
-                        shutil.copytree(item, dest)
-                    print(f"[UPDATE] Copied {item.name} to pending update")
+                        if dest_path.exists():
+                            shutil.rmtree(dest_path)
+                        shutil.copytree(item, dest_path)
+                        files_copied += 1
+                        print(f"[UPDATE] Copied directory: {item.name}")
                 except Exception as e:
                     print(f"[UPDATE] Warning: Could not copy {item.name}: {e}")
-                    # Continue with other files
             
-            # Create update script that will be run on next restart
-            update_script = pending_update_dir / "apply_update.py"
-            update_script.write_text(f'''#!/usr/bin/env python3
-"""
-Update script to apply pending updates on next restart
-"""
-import shutil
-import os
-from pathlib import Path
-
-def apply_update():
-    install_path = Path("{self.install_path}")
-    pending_dir = install_path / "pending_update"
-    
-    if not pending_dir.exists():
-        print("No pending update found")
-        return
-    
-    print("Applying pending update...")
-    
-    # Files to preserve
-    files_to_preserve = [
-        'student_attendance.db',
-        'bussed-2e3ff-04a2f3a1396d.json',
-        'requirements.txt'
-    ]
-    
-    # Backup preserved files
-    preserve_temp = install_path / "temp_preserved"
-    preserve_temp.mkdir(exist_ok=True)
-    for file_name in files_to_preserve:
-        src_file = install_path / file_name
-        if src_file.exists():
-            shutil.copy2(src_file, preserve_temp / file_name)
-    
-    # Remove old files (except preserved ones)
-    for item in install_path.iterdir():
-        if item.name not in files_to_preserve and item.name != "pending_update":
-            try:
-                if item.is_file():
-                    item.unlink()
-                elif item.is_dir():
-                    shutil.rmtree(item)
-            except Exception as e:
-                print(f"Warning: Could not remove {{item.name}}: {{e}}")
-    
-    # Copy new files
-    for item in pending_dir.iterdir():
-        if item.name != "apply_update.py":
-            dest = install_path / item.name
-            try:
-                if item.is_file():
-                    shutil.copy2(item, dest)
-                elif item.is_dir():
-                    shutil.copytree(item, dest)
-            except Exception as e:
-                print(f"Warning: Could not copy {{item.name}}: {{e}}")
-    
-    # Restore preserved files
-    for file_name in files_to_preserve:
-        src_file = preserve_temp / file_name
-        if src_file.exists():
-            shutil.copy2(src_file, install_path / file_name)
-    
-    # Cleanup
-    shutil.rmtree(pending_dir)
-    shutil.rmtree(preserve_temp)
-    print("Update applied successfully!")
-
-if __name__ == "__main__":
-    apply_update()
-''')
-            
-            print(f"[UPDATE] Created update script: {update_script}")
-            
-            # Restore preserved files
-            for file_name in files_to_preserve:
-                src_file = preserve_temp / file_name
-                if src_file.exists():
-                    shutil.copy2(src_file, self.install_path / file_name)
-            
-            # Clean up
+            # Clean up temp directory
             shutil.rmtree(self.temp_dir)
             
-            self.status_update.emit("Update downloaded successfully! Will be applied on restart.")
+            print(f"[UPDATE] Successfully copied {files_copied} items to deposit folder")
+            self.status_update.emit(f"Update ready! {files_copied} files in deposit folder. Restart to apply.")
             self.download_complete.emit(True)
             
+        except requests.exceptions.RequestException as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[UPDATE] Network error: {e}")
+            print(f"[UPDATE] Full error details:\n{error_details}")
+            self.status_update.emit(f"Network error: {str(e)}")
+            self.download_complete.emit(False)
+        except zipfile.BadZipFile as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[UPDATE] Invalid zip file: {e}")
+            print(f"[UPDATE] Full error details:\n{error_details}")
+            self.status_update.emit(f"Invalid update file: {str(e)}")
+            self.download_complete.emit(False)
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
@@ -279,7 +207,7 @@ if __name__ == "__main__":
 class UpdateManager:
     """Main update manager class"""
     
-    def __init__(self, parent_window, current_version="1.0.0", repo_owner="your-username", repo_name="id-project"):
+    def __init__(self, parent_window, current_version="1.0.0", repo_owner="your-username", repo_name="id-project", deposit_dir=None):
         self.parent_window = parent_window
         self.current_version = current_version
         self.repo_owner = repo_owner
@@ -287,6 +215,18 @@ class UpdateManager:
         self.update_checker = None
         self.update_downloader = None
         self.progress_dialog = None
+        
+        # Detect deposit directory (should be ../deposit relative to main directory)
+        if deposit_dir:
+            self.deposit_dir = Path(deposit_dir)
+        else:
+            # Assume we're running from main/ directory, so deposit is ../deposit
+            current_dir = Path(__file__).parent
+            self.deposit_dir = current_dir.parent / "deposit"
+        
+        # Ensure deposit directory exists
+        self.deposit_dir.mkdir(exist_ok=True)
+        print(f"[UPDATE] Using deposit directory: {self.deposit_dir}")
         
         # Auto-check for updates on startup (every 24 hours) - DISABLED
         self.auto_check_timer = QTimer()
@@ -328,17 +268,18 @@ class UpdateManager:
                               "Failed to check for updates. Please check your internet connection.")
     
     def download_and_install_update(self, update_info):
-        """Download and install the update"""
+        """Download update to deposit folder"""
         if self.update_downloader and self.update_downloader.isRunning():
             return
             
         # Create progress dialog
         self.progress_dialog = QProgressDialog("Downloading update...", "Cancel", 0, 100, self.parent_window)
-        self.progress_dialog.setWindowTitle("Updating Application")
+        self.progress_dialog.setWindowTitle("Downloading Update")
         self.progress_dialog.setModal(True)
         self.progress_dialog.show()
         
-        self.update_downloader = UpdateDownloader(update_info)
+        # Pass deposit directory to UpdateDownloader
+        self.update_downloader = UpdateDownloader(update_info, self.deposit_dir)
         self.update_downloader.progress_update.connect(self.progress_dialog.setValue)
         self.update_downloader.status_update.connect(self.progress_dialog.setLabelText)
         self.update_downloader.download_complete.connect(self.on_update_complete)
@@ -350,16 +291,20 @@ class UpdateManager:
         
         if success:
             msg = QMessageBox(self.parent_window)
-            msg.setWindowTitle("Update Downloaded")
+            msg.setWindowTitle("Update Ready")
             msg.setText("The update has been downloaded successfully!")
-            msg.setInformativeText("The update will be applied when you restart the application.")
+            msg.setInformativeText(
+                "Files have been placed in the deposit folder.\n\n"
+                "The OTA update system will automatically apply them when you restart the application.\n\n"
+                "You can restart now or wait until a convenient time."
+            )
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec_()
             
             # Don't restart automatically - let user restart when convenient
         else:
             QMessageBox.critical(self.parent_window, "Update Failed", 
-                               "The update failed. Please try again later or contact support.")
+                               "The update download failed. Please try again later or check your internet connection.")
     
     def restart_application(self):
         """Restart the application"""
