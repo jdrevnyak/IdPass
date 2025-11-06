@@ -168,85 +168,108 @@ class OTAUpdateManager:
             source_dir = extracted_dirs[0]
             self.logger(f"Found source directory: {source_dir.name}")
 
-            # Check if there's a main/ subdirectory - use files from inside it
+            # Check if the extracted directory has a 'main' subdirectory
             main_subdir = source_dir / "main"
-            if main_subdir.exists() and main_subdir.is_dir():
-                self.logger(f"Detected main/ subdirectory in release - using files from inside it")
-                source_dir = main_subdir
-            else:
-                self.logger(f"No main/ subdirectory - using root-level files")
-
-            # Files/directories to skip during update
-            skip_patterns = [
-                '__pycache__',  # Python cache
-                '*.pyc',        # Compiled Python files
-                'venv',         # Virtual environment
-                'logs',         # Log files
-                'deposit',      # Deposit folder
-                '.git',         # Git directory
-                '.DS_Store',    # Mac system files
-                'Thumbs.db',    # Windows system files
-            ]
+            has_main_folder = main_subdir.exists() and main_subdir.is_dir()
             
-            # Infrastructure files that shouldn't be updated (should stay at root)
-            infrastructure_files = [
-                'ota-update.py',
-                'diagnose_ota.py',
-                'setup_ota_updates.sh',
-                'setup_nfc_service.sh',
-                'start_nfc_reader.sh',
-                'autostart_nfc.sh',
-                'startup_diagnostic.sh',
-                'nfc_reader.service',
-                'nfc-reader-user.service',
-                'cleanup_duplicates.sh',
-            ]
-
-            # Move files from the extracted directory to deposit
-            # Skip files that should be preserved or are infrastructure
             files_copied = 0
-            for item in source_dir.iterdir():
-                # Skip hidden files and system files
-                if item.name.startswith('.'):
-                    continue
+            
+            if has_main_folder:
+                self.logger(f"Detected main/ subdirectory in release")
+                self.logger(f"Strategy: Copy main/ contents → deposit/ (for local main/)")
+                self.logger(f"          Copy root files → local root (infrastructure)")
                 
-                # Skip cache directories
-                if item.name in skip_patterns:
-                    self.logger(f"Skipping system file/directory: {item.name}")
-                    continue
-                
-                # Skip compiled Python cache files
-                if item.name.endswith('.pyc'):
-                    continue
-                
-                # Skip preserved files
-                if item.name in self.preserve_files:
-                    self.logger(f"Skipping preserved file: {item.name}")
-                    continue
-                
-                # Skip infrastructure files
-                if item.name in infrastructure_files:
-                    self.logger(f"Skipping infrastructure file: {item.name}")
-                    continue
+                # 1. Copy files from GitHub's main/ folder to deposit/ 
+                #    (these will be applied to local main/ directory)
+                for item in main_subdir.iterdir():
+                    if item.name.startswith('.'):  # Skip hidden files
+                        continue
+                    if item.name in self.preserve_files:
+                        self.logger(f"Skipping preserved file: {item.name}")
+                        continue
 
-                dest_path = self.deposit_dir / item.name
-                try:
-                    if item.is_file():
-                        shutil.copy2(item, dest_path)
-                        files_copied += 1
-                    elif item.is_dir():
-                        if dest_path.exists():
-                            shutil.rmtree(dest_path)
-                        shutil.copytree(item, dest_path)
-                        files_copied += 1
-                except Exception as e:
-                    self.logger(f"Error copying {item.name}: {e}", "ERROR")
+                    dest_path = self.deposit_dir / item.name
+                    try:
+                        if item.is_file():
+                            shutil.copy2(item, dest_path)
+                            files_copied += 1
+                            self.logger(f"Staged for main/: {item.name}")
+                        elif item.is_dir():
+                            if dest_path.exists():
+                                shutil.rmtree(dest_path)
+                            shutil.copytree(item, dest_path)
+                            files_copied += 1
+                            self.logger(f"Staged directory for main/: {item.name}")
+                    except Exception as e:
+                        self.logger(f"Error staging {item.name}: {e}", "ERROR")
+                
+                # 2. Copy root-level infrastructure files directly to project root
+                #    (files like ota-update.py, setup scripts, docs, etc.)
+                root_files_updated = 0
+                infrastructure_files = [
+                    'ota-update.py',
+                    'updater.py',
+                    'diagnose_ota.py',
+                    'prepare_release.py',
+                    'test_updater.py',
+                    'setup_ota_updates.sh',
+                    'setup_nfc_service.sh',
+                    'start_nfc_reader.sh',
+                    'autostart_nfc.sh',
+                    'nfc_reader.service',
+                    'nfc-reader-user.service',
+                    '.gitignore'
+                ]
+                
+                for item in source_dir.iterdir():
+                    # Only process infrastructure files from root
+                    if item.name in infrastructure_files:
+                        dest_path = self.project_root / item.name
+                        try:
+                            if item.is_file():
+                                # Check if different before copying
+                                if self._files_are_different(item, dest_path):
+                                    shutil.copy2(item, dest_path)
+                                    root_files_updated += 1
+                                    self.logger(f"Updated infrastructure: {item.name}")
+                                else:
+                                    self.logger(f"Skipped (unchanged): {item.name}")
+                        except Exception as e:
+                            self.logger(f"Error updating infrastructure {item.name}: {e}", "ERROR")
+                
+                self.logger(f"Staged {files_copied} files for main/, updated {root_files_updated} infrastructure files")
+                
+            else:
+                # No main/ folder - copy everything from root to deposit
+                self.logger(f"No main/ subdirectory found - using root files")
+                
+                for item in source_dir.iterdir():
+                    if item.name.startswith('.'):  # Skip hidden files
+                        continue
+                    if item.name in self.preserve_files:
+                        self.logger(f"Skipping preserved file: {item.name}")
+                        continue
+
+                    dest_path = self.deposit_dir / item.name
+                    try:
+                        if item.is_file():
+                            shutil.copy2(item, dest_path)
+                            files_copied += 1
+                        elif item.is_dir():
+                            if dest_path.exists():
+                                shutil.rmtree(dest_path)
+                            shutil.copytree(item, dest_path)
+                            files_copied += 1
+                    except Exception as e:
+                        self.logger(f"Error copying {item.name}: {e}", "ERROR")
+                
+                self.logger(f"Staged {files_copied} files for main/")
 
             # Clean up
             shutil.rmtree(temp_extract_dir)
             zip_path.unlink()
 
-            self.logger(f"Release downloaded and extracted to deposit directory ({files_copied} files copied)")
+            self.logger(f"Release downloaded successfully")
             return True
 
         except requests.exceptions.RequestException as e:
@@ -277,8 +300,26 @@ class OTAUpdateManager:
             self.logger("No updates available")
             return False
 
+    def _files_are_different(self, src_file, dst_file):
+        """Check if two files are different (compare size and modification time)"""
+        if not dst_file.exists():
+            return True  # Destination doesn't exist, needs copying
+        
+        src_stat = src_file.stat()
+        dst_stat = dst_file.stat()
+        
+        # Compare file sizes first (fast)
+        if src_stat.st_size != dst_stat.st_size:
+            return True
+        
+        # Compare modification times (if same size, check if source is newer)
+        if src_stat.st_mtime > dst_stat.st_mtime:
+            return True
+        
+        return False
+
     def _copy_tree_preserve(self, src, dst):
-        """Copy directory tree while preserving certain files"""
+        """Copy directory tree while preserving certain files and only updating changed files"""
         for item in src.iterdir():
             if item.name.startswith('.'):  # Skip hidden files
                 continue
@@ -299,8 +340,12 @@ class OTAUpdateManager:
                         self.logger(f"Preserving existing file: {item.name}")
                         continue
 
-                    shutil.copy2(item, dest_path)
-                    self.logger(f"Copied file: {item.name}")
+                    # Only copy if file is different
+                    if self._files_are_different(item, dest_path):
+                        shutil.copy2(item, dest_path)
+                        self.logger(f"Updated file: {item.name}")
+                    else:
+                        self.logger(f"Skipped (unchanged): {item.name}")
 
                 elif item.is_dir():
                     if dest_path.exists():
