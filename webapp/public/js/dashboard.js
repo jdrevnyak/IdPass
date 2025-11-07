@@ -67,10 +67,13 @@ function updateCurrentPeriod() {
 updateCurrentPeriod();
 setInterval(updateCurrentPeriod, 60000);
 
-// Get today's date in YYYY-MM-DD format
+// Get today's date in YYYY-MM-DD format (local timezone)
 function getTodayDate() {
   const today = new Date();
-  return today.toISOString().split('T')[0];
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // Format time for display
@@ -104,7 +107,7 @@ db.collection('bathroom_breaks')
 
     // Also get nurse visits
     db.collection('nurse_visits')
-      .where('visit_end', '==', '')
+      .where('visit_end', '==', null)
       .onSnapshot((nurseSnapshot) => {
         nurseSnapshot.forEach((doc) => {
           const data = doc.data();
@@ -136,24 +139,33 @@ db.collection('bathroom_breaks')
 
 // Get today's statistics
 const today = getTodayDate();
+console.log('[DASHBOARD] Today\'s date:', today);
 
 // Total bathroom breaks today
 db.collection('bathroom_breaks')
   .onSnapshot((snapshot) => {
+    console.log('[DASHBOARD] Bathroom breaks snapshot received, total docs:', snapshot.size);
     const todayBreaks = [];
     snapshot.forEach((doc) => {
       const data = doc.data();
-      if (data.break_start && data.break_start.startsWith(today)) {
-        todayBreaks.push(data);
+      console.log('[DASHBOARD] Break doc:', doc.id, 'data:', data);
+      // Check if break_start exists and matches today's date
+      if (data.break_start) {
+        const breakDate = data.break_start.substring(0, 10); // Extract YYYY-MM-DD
+        console.log('[DASHBOARD] Break date:', breakDate, 'vs today:', today, 'match:', breakDate === today);
+        if (breakDate === today) {
+          todayBreaks.push(data);
+        }
       }
     });
+    console.log('[DASHBOARD] Today\'s breaks count:', todayBreaks.length);
 
     document.getElementById('totalBreaksToday').textContent = todayBreaks.length;
 
-    // Calculate average duration
-    const completedBreaks = todayBreaks.filter(b => b.duration_minutes);
+    // Calculate average duration (excluding null and 0 durations)
+    const completedBreaks = todayBreaks.filter(b => b.duration_minutes && b.duration_minutes > 0);
     if (completedBreaks.length > 0) {
-      const avgDuration = completedBreaks.reduce((sum, b) => sum + parseInt(b.duration_minutes || 0), 0) / completedBreaks.length;
+      const avgDuration = completedBreaks.reduce((sum, b) => sum + parseInt(b.duration_minutes), 0) / completedBreaks.length;
       document.getElementById('avgBreakDuration').textContent = Math.round(avgDuration);
     } else {
       document.getElementById('avgBreakDuration').textContent = '0';
@@ -166,8 +178,11 @@ db.collection('nurse_visits')
     let todayVisits = 0;
     snapshot.forEach((doc) => {
       const data = doc.data();
-      if (data.visit_start && data.visit_start.startsWith(today)) {
-        todayVisits++;
+      if (data.visit_start) {
+        const visitDate = data.visit_start.substring(0, 10); // Extract YYYY-MM-DD
+        if (visitDate === today) {
+          todayVisits++;
+        }
       }
     });
 
@@ -176,62 +191,93 @@ db.collection('nurse_visits')
 
 // Recent activity
 function loadRecentActivity() {
+  console.log('[DASHBOARD] Loading recent activity for date:', today);
   const recentActivityBody = document.getElementById('recentActivityBody');
   const activities = [];
 
   // Get bathroom breaks
   db.collection('bathroom_breaks')
-    .orderBy('break_start', 'desc')
-    .limit(10)
     .get()
     .then((snapshot) => {
+      console.log('[DASHBOARD] Recent activity - bathroom breaks count:', snapshot.size);
       snapshot.forEach((doc) => {
         const data = doc.data();
-        if (data.break_start && data.break_start.startsWith(today)) {
-          activities.push({
-            name: data.student_name,
-            type: 'Bathroom',
-            start: data.break_start,
-            status: data.break_end ? 'Ended' : 'Active'
-          });
+        console.log('[DASHBOARD] Recent activity - break:', doc.id, data);
+        // Check if break_start exists and matches today's date
+        if (data.break_start) {
+          const breakDate = data.break_start.substring(0, 10); // Extract YYYY-MM-DD
+          console.log('[DASHBOARD] Recent activity - break date:', breakDate, 'vs today:', today);
+          if (breakDate === today) {
+            activities.push({
+              name: data.student_name || 'Unknown',
+              type: 'Bathroom',
+              start: data.break_start,
+              end: data.break_end,
+              duration: data.duration_minutes,
+              status: data.break_end ? 'Ended' : 'Active'
+            });
+          }
         }
       });
+      console.log('[DASHBOARD] Recent activity - activities after breaks:', activities.length);
 
       // Get nurse visits
       db.collection('nurse_visits')
-        .orderBy('visit_start', 'desc')
-        .limit(10)
         .get()
         .then((nurseSnapshot) => {
           nurseSnapshot.forEach((doc) => {
             const data = doc.data();
-            if (data.visit_start && data.visit_start.startsWith(today)) {
-              activities.push({
-                name: data.student_name,
-                type: 'Nurse',
-                start: data.visit_start,
-                status: data.visit_end ? 'Ended' : 'Active'
-              });
+            if (data.visit_start) {
+              const visitDate = data.visit_start.substring(0, 10); // Extract YYYY-MM-DD
+              if (visitDate === today) {
+                activities.push({
+                  name: data.student_name || 'Unknown',
+                  type: 'Nurse',
+                  start: data.visit_start,
+                  end: data.visit_end,
+                  duration: data.duration_minutes,
+                  status: data.visit_end ? 'Ended' : 'Active'
+                });
+              }
             }
           });
 
-          // Sort by start time
+          // Sort by start time (newest first)
           activities.sort((a, b) => new Date(b.start) - new Date(a.start));
+          console.log('[DASHBOARD] Recent activity - final activities:', activities.length, activities);
 
           // Display activities
           if (activities.length === 0) {
-            recentActivityBody.innerHTML = '<tr><td colspan="4" class="empty-state">No activity today</td></tr>';
+            recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">No activity today</td></tr>';
           } else {
-            recentActivityBody.innerHTML = activities.slice(0, 10).map(activity => `
-              <tr>
-                <td>${activity.name}</td>
-                <td>${activity.type}</td>
-                <td>${formatTime(activity.start)}</td>
-                <td><span class="badge ${activity.status === 'Active' ? 'badge-active' : 'badge-ended'}">${activity.status}</span></td>
-              </tr>
-            `).join('');
+            recentActivityBody.innerHTML = activities.slice(0, 10).map(activity => {
+              console.log('[DASHBOARD] Rendering activity:', activity);
+              const endTime = activity.end ? formatTime(activity.end) : '-';
+              const duration = (activity.duration !== null && activity.duration !== undefined) ? activity.duration + ' min' : '-';
+              const statusBadge = activity.status === 'Active' ? 'badge-active' : 'badge-ended';
+              console.log('[DASHBOARD] Formatted - end:', endTime, 'duration:', duration, 'status:', activity.status);
+              
+              return `
+                <tr>
+                  <td>${activity.name}</td>
+                  <td>${activity.type}</td>
+                  <td>${formatTime(activity.start)}</td>
+                  <td>${endTime}</td>
+                  <td>${duration}</td>
+                  <td><span class="badge ${statusBadge}">${activity.status}</span></td>
+                </tr>
+              `;
+            }).join('');
           }
+        })
+        .catch((error) => {
+          console.error('Error loading nurse visits:', error);
+          recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">Error loading activities</td></tr>';
         });
+    })
+    .catch((error) => {
+      console.error('Error loading bathroom breaks:', error);
+      recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">Error loading activities</td></tr>';
     });
 }
 

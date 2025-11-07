@@ -27,9 +27,15 @@
     <div class="container">
         <h1>Analytics</h1>
 
-        <!-- Date Range Selector -->
+        <!-- Filters -->
         <div class="card">
             <div class="filter-bar">
+                <div class="form-group">
+                    <label for="filterStudent">Student</label>
+                    <select id="filterStudent" style="padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px;">
+                        <option value="">All Students</option>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label for="startDate">Start Date</label>
                     <input type="date" id="startDate">
@@ -82,6 +88,27 @@
             </table>
         </div>
 
+        <!-- Detailed Bathroom Breaks -->
+        <div class="card">
+            <div class="card-title">Detailed Bathroom Breaks</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Student</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="detailedBreaksBody">
+                    <tr>
+                        <td colspan="5" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
         <!-- Nurse Visits Breakdown -->
         <div class="card">
             <div class="card-title">Nurse Visits by Student</div>
@@ -97,6 +124,27 @@
                 <tbody id="nurseBreakdownBody">
                     <tr>
                         <td colspan="4" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Detailed Nurse Visits -->
+        <div class="card">
+            <div class="card-title">Detailed Nurse Visits</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Student</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="detailedNurseBody">
+                    <tr>
+                        <td colspan="5" class="empty-state">Select a date range and click Load Data</td>
                     </tr>
                 </tbody>
             </table>
