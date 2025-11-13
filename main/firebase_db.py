@@ -382,7 +382,7 @@ class FirebaseDatabase:
             return False
     
     def has_students_out(self) -> bool:
-        """Check if any students are currently out (on bathroom break or at nurse)"""
+        """Check if any students are currently out (on bathroom break, at nurse, or at water fountain)"""
         try:
             # Check for active bathroom breaks
             breaks_ref = self.db.collection('bathroom_breaks')
@@ -396,6 +396,13 @@ class FirebaseDatabase:
             nurse_query = nurse_ref.where('visit_end', '==', None).limit(1).get()
             
             if len(list(nurse_query)) > 0:
+                return True
+            
+            # Check for active water visits
+            water_ref = self.db.collection('water_visits')
+            water_query = water_ref.where('visit_end', '==', None).limit(1).get()
+            
+            if len(list(water_query)) > 0:
                 return True
             
             return False
@@ -531,6 +538,93 @@ class FirebaseDatabase:
             print(f"[FIREBASE] Error ending nurse visit: {e}")
             return False, str(e)
     
+    def is_at_water(self, identifier: str) -> bool:
+        """Check if student is currently at the water fountain"""
+        try:
+            water_ref = self.db.collection('water_visits')
+            query = water_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).limit(1).get()
+            
+            return len(list(query)) > 0
+            
+        except Exception as e:
+            print(f"[FIREBASE] Error checking water status: {e}")
+            return False
+    
+    def start_water_visit(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
+        """Start a water fountain visit for a student"""
+        try:
+            identifier = self.get_identifier(nfc_uid, student_id)
+            if not self.is_checked_in(identifier):
+                # Auto-check-in the student first
+                print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
+                if identifier.startswith('TEST') or len(str(identifier)) > 10:
+                    success, message = self.check_in(nfc_uid=identifier)
+                else:
+                    success, message = self.check_in(student_id=identifier)
+                
+                if not success:
+                    return False, f"Auto-check-in failed: {message}"
+                print(f"[FIREBASE] Auto-check-in successful: {message}")
+            
+            # Check if this student has an active water visit - if so, end it
+            if self.is_at_water(identifier):
+                print(f"[FIREBASE] Student {identifier} is already at water fountain, ending current visit...")
+                success, message = self.end_water_visit(nfc_uid=nfc_uid, student_id=student_id)
+                if success:
+                    print(f"[FIREBASE] Ended previous water visit: {message}")
+                    return True, "Previous water visit ended, ready for new activities"
+                else:
+                    return False, f"Failed to end previous water visit: {message}"
+            
+            # Get student name and start new water visit
+            student_name = self.get_student_name(identifier)
+            current_time = datetime.now().isoformat()
+            
+            visit_data = {
+                'student_uid': identifier,
+                'student_name': student_name,
+                'visit_start': current_time,
+                'visit_end': None,
+                'duration_minutes': None
+            }
+            
+            self.db.collection('water_visits').add(visit_data)
+            
+            return True, "Water visit started"
+            
+        except Exception as e:
+            print(f"[FIREBASE] Error starting water visit: {e}")
+            return False, str(e)
+    
+    def end_water_visit(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
+        """End a water fountain visit for a student"""
+        try:
+            identifier = self.get_identifier(nfc_uid, student_id)
+            water_ref = self.db.collection('water_visits')
+            query = water_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).get()
+            
+            for doc in query:
+                data = doc.to_dict()
+                
+                # Calculate duration
+                start_time = datetime.fromisoformat(data['visit_start'])
+                end_time = datetime.now()
+                duration = int((end_time - start_time).total_seconds() / 60)
+                
+                # Update the document
+                doc.reference.update({
+                    'visit_end': end_time.isoformat(),
+                    'duration_minutes': duration
+                })
+                
+                return True, "Water visit ended"
+            
+            return False, "Student is not at the water fountain"
+            
+        except Exception as e:
+            print(f"[FIREBASE] Error ending water visit: {e}")
+            return False, str(e)
+    
     def get_today_attendance(self) -> List[Tuple]:
         """Get today's attendance records"""
         try:
@@ -648,14 +742,14 @@ class FirebaseDatabase:
                         print(f"[FIREBASE] Error processing scheduled checkout for {data['student_uid']}: {e}")
                         continue
 
-            # Also auto-end bathroom breaks and nurse visits at period end
+            # Also auto-end bathroom breaks, nurse visits, and water visits at period end
             self._auto_end_breaks_and_visits_at_period_end()
 
         except Exception as e:
             print(f"[FIREBASE] Error in auto-checkout: {e}")
 
     def _auto_end_breaks_and_visits_at_period_end(self):
-        """Automatically end active bathroom breaks and nurse visits when the current period ends"""
+        """Automatically end active bathroom breaks, nurse visits, and water visits when the current period ends"""
         try:
             now = datetime.now()
 
@@ -732,6 +826,35 @@ class FirebaseDatabase:
 
                 except Exception as e:
                     print(f"[FIREBASE AUTO-END] Error ending nurse visit: {e}")
+
+            # Auto-end water visits
+            water_ref = self.db.collection('water_visits')
+            water_query = water_ref.where('visit_end', '==', None).get()
+
+            for doc in water_query:
+                try:
+                    data = doc.to_dict()
+                    visit_start_str = data.get('visit_start')
+
+                    if visit_start_str:
+                        # Parse visit start time
+                        visit_start_dt = datetime.fromisoformat(visit_start_str)
+
+                        # Only auto-end visits that started before the period end
+                        if visit_start_dt < period_end_dt:
+                            # Calculate duration
+                            duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+
+                            # End the visit
+                            doc.reference.update({
+                                'visit_end': period_end_dt.isoformat(),
+                                'duration_minutes': duration
+                            })
+
+                            print(f"[FIREBASE AUTO-END] Ended water visit for {data['student_uid']} (duration: {duration}min)")
+
+                except Exception as e:
+                    print(f"[FIREBASE AUTO-END] Error ending water visit: {e}")
 
         except Exception as e:
             print(f"[FIREBASE AUTO-END] Error in auto-end breaks and visits: {e}")

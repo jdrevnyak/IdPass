@@ -90,51 +90,222 @@ function calculateDuration(start, end = null) {
   return Math.floor((endTime - startTime) / 1000 / 60);
 }
 
+// Track active breaks for end all functionality
+let activeBreaksData = {
+  bathroom: [],
+  nurse: [],
+  water: []
+};
+
+// Function to update button visibility
+function updateEndAllButton() {
+  const totalActive = activeBreaksData.bathroom.length + 
+                      activeBreaksData.nurse.length + 
+                      activeBreaksData.water.length;
+  const btn = document.getElementById('endAllBreaksBtn');
+  if (btn) {
+    btn.style.display = totalActive > 0 ? 'block' : 'none';
+  }
+}
+
+// Function to end all active breaks
+async function endAllActiveBreaks() {
+  const totalActive = activeBreaksData.bathroom.length + 
+                      activeBreaksData.nurse.length + 
+                      activeBreaksData.water.length;
+  
+  if (totalActive === 0) {
+    alert('No active breaks to end');
+    return;
+  }
+
+  const confirmMsg = `Are you sure you want to end all ${totalActive} active break(s) and visit(s)?\n\n` +
+    `This will end:\n` +
+    `- ${activeBreaksData.bathroom.length} bathroom break(s)\n` +
+    `- ${activeBreaksData.nurse.length} nurse visit(s)\n` +
+    `- ${activeBreaksData.water.length} water visit(s)`;
+  
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+
+  const btn = document.getElementById('endAllBreaksBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Ending...';
+  }
+
+  const endTime = new Date().toISOString();
+  let successCount = 0;
+  let errorCount = 0;
+  const errors = [];
+
+  try {
+    // End bathroom breaks
+    for (const doc of activeBreaksData.bathroom) {
+      try {
+        const data = doc.data();
+        const startTime = new Date(data.break_start);
+        const duration = Math.floor((new Date(endTime) - startTime) / 1000 / 60);
+        
+        await doc.ref.update({
+          break_end: endTime,
+          duration_minutes: duration
+        });
+        successCount++;
+      } catch (error) {
+        errorCount++;
+        errors.push(`Bathroom break (${doc.id}): ${error.message}`);
+      }
+    }
+
+    // End nurse visits
+    for (const doc of activeBreaksData.nurse) {
+      try {
+        const data = doc.data();
+        const startTime = new Date(data.visit_start);
+        const duration = Math.floor((new Date(endTime) - startTime) / 1000 / 60);
+        
+        await doc.ref.update({
+          visit_end: endTime,
+          duration_minutes: duration
+        });
+        successCount++;
+      } catch (error) {
+        errorCount++;
+        errors.push(`Nurse visit (${doc.id}): ${error.message}`);
+      }
+    }
+
+    // End water visits
+    for (const doc of activeBreaksData.water) {
+      try {
+        const data = doc.data();
+        const startTime = new Date(data.visit_start);
+        const duration = Math.floor((new Date(endTime) - startTime) / 1000 / 60);
+        
+        await doc.ref.update({
+          visit_end: endTime,
+          duration_minutes: duration
+        });
+        successCount++;
+      } catch (error) {
+        errorCount++;
+        errors.push(`Water visit (${doc.id}): ${error.message}`);
+      }
+    }
+
+    if (errorCount > 0) {
+      alert(`Ended ${successCount} break(s)/visit(s) successfully.\n\n` +
+            `Failed to end ${errorCount}:\n${errors.join('\n')}`);
+    } else {
+      alert(`Successfully ended all ${successCount} active break(s) and visit(s).`);
+    }
+  } catch (error) {
+    console.error('Error ending all breaks:', error);
+    alert(`Error ending breaks: ${error.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'End All Active Breaks';
+    }
+  }
+}
+
+// Attach click handler to button (script runs after DOM is loaded)
+const endAllBreaksBtn = document.getElementById('endAllBreaksBtn');
+if (endAllBreaksBtn) {
+  endAllBreaksBtn.addEventListener('click', endAllActiveBreaks);
+}
+
+// Function to update students out display
+function updateStudentsOutDisplay() {
+  const studentsOut = [];
+  
+  // Add bathroom breaks
+  activeBreaksData.bathroom.forEach((doc) => {
+    const data = doc.data();
+    studentsOut.push({
+      name: data.student_name,
+      type: 'Bathroom',
+      start: data.break_start,
+      duration: calculateDuration(data.break_start)
+    });
+  });
+  
+  // Add nurse visits
+  activeBreaksData.nurse.forEach((doc) => {
+    const data = doc.data();
+    studentsOut.push({
+      name: data.student_name,
+      type: 'Nurse',
+      start: data.visit_start,
+      duration: calculateDuration(data.visit_start)
+    });
+  });
+  
+  // Add water visits
+  activeBreaksData.water.forEach((doc) => {
+    const data = doc.data();
+    studentsOut.push({
+      name: data.student_name,
+      type: 'Water',
+      start: data.visit_start,
+      duration: calculateDuration(data.visit_start)
+    });
+  });
+
+  // Update students out count
+  document.getElementById('studentsOutCount').textContent = studentsOut.length;
+
+  // Update students out list
+  const listContainer = document.getElementById('studentsOutList');
+  if (studentsOut.length === 0) {
+    listContainer.innerHTML = '<div class="empty-state"><p>No students currently out</p></div>';
+  } else {
+    listContainer.innerHTML = studentsOut.map(student => `
+      <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+        <strong>${student.name}</strong> - ${student.type}<br>
+        <small>Out for ${student.duration} minutes</small>
+      </div>
+    `).join('');
+  }
+
+  // Update button visibility
+  updateEndAllButton();
+}
+
 // Listen for students currently on bathroom breaks
 db.collection('bathroom_breaks')
   .where('break_end', '==', null)
   .onSnapshot((snapshot) => {
-    const studentsOut = [];
+    activeBreaksData.bathroom = [];
     snapshot.forEach((doc) => {
-      const data = doc.data();
-      studentsOut.push({
-        name: data.student_name,
-        type: 'Bathroom',
-        start: data.break_start,
-        duration: calculateDuration(data.break_start)
-      });
+      activeBreaksData.bathroom.push(doc);
     });
+    updateStudentsOutDisplay();
+  });
 
-    // Also get nurse visits
-    db.collection('nurse_visits')
-      .where('visit_end', '==', null)
-      .onSnapshot((nurseSnapshot) => {
-        nurseSnapshot.forEach((doc) => {
-          const data = doc.data();
-          studentsOut.push({
-            name: data.student_name,
-            type: 'Nurse',
-            start: data.visit_start,
-            duration: calculateDuration(data.visit_start)
-          });
-        });
+// Listen for nurse visits
+db.collection('nurse_visits')
+  .where('visit_end', '==', null)
+  .onSnapshot((snapshot) => {
+    activeBreaksData.nurse = [];
+    snapshot.forEach((doc) => {
+      activeBreaksData.nurse.push(doc);
+    });
+    updateStudentsOutDisplay();
+  });
 
-        // Update students out count
-        document.getElementById('studentsOutCount').textContent = studentsOut.length;
-
-        // Update students out list
-        const listContainer = document.getElementById('studentsOutList');
-        if (studentsOut.length === 0) {
-          listContainer.innerHTML = '<div class="empty-state"><p>No students currently out</p></div>';
-        } else {
-          listContainer.innerHTML = studentsOut.map(student => `
-            <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-              <strong>${student.name}</strong> - ${student.type}<br>
-              <small>Out for ${student.duration} minutes</small>
-            </div>
-          `).join('');
-        }
-      });
+// Listen for water visits
+db.collection('water_visits')
+  .where('visit_end', '==', null)
+  .onSnapshot((snapshot) => {
+    activeBreaksData.water = [];
+    snapshot.forEach((doc) => {
+      activeBreaksData.water.push(doc);
+    });
+    updateStudentsOutDisplay();
   });
 
 // Get today's statistics

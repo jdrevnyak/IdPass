@@ -33,6 +33,13 @@ service cloud.firestore {
       allow delete: if request.auth != null;
     }
     
+    // Water visits collection
+    match /water_visits/{visitId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+    
     // Settings collection
     match /settings/{settingId} {
       allow read: if request.auth != null;

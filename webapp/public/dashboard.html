@@ -55,7 +55,12 @@
 
         <!-- Students Currently Out -->
         <div class="card">
-            <div class="card-title">Students Currently Out</div>
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Students Currently Out</span>
+                <button id="endAllBreaksBtn" class="btn btn-danger" style="padding: 0.5rem 1rem; font-size: 0.9rem; display: none;">
+                    End All Active Breaks
+                </button>
+            </div>
             <div id="studentsOutList"></div>
         </div>
 

@@ -223,9 +223,11 @@ class OnlineFirstDatabase:
                 breaks_count = cursor.fetchone()[0]
                 cursor.execute("SELECT COUNT(*) FROM nurse_visits")
                 visits_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM water_visits")
+                water_count = cursor.fetchone()[0]
                 
-                if attendance_count > 0 or breaks_count > 0 or visits_count > 0:
-                    print(f"[ONLINE-FIRST] Found offline data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits")
+                if attendance_count > 0 or breaks_count > 0 or visits_count > 0 or water_count > 0:
+                    print(f"[ONLINE-FIRST] Found offline data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
                     print("[ONLINE-FIRST] Syncing local changes to Firebase...")
                     self._sync_local_to_firebase()
                     self._clear_local_database()
@@ -256,12 +258,14 @@ class OnlineFirstDatabase:
             breaks_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM nurse_visits WHERE 1")
             visits_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM water_visits WHERE 1")
+            water_count = cursor.fetchone()[0]
             
             conn.close()
             
-            if attendance_count > 0 or breaks_count > 0 or visits_count > 0:
+            if attendance_count > 0 or breaks_count > 0 or visits_count > 0 or water_count > 0:
                 print(f"[ONLINE-FIRST] 🔍 Found existing offline data on startup!")
-                print(f"[ONLINE-FIRST] Data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits")
+                print(f"[ONLINE-FIRST] Data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
                 print("[ONLINE-FIRST] Initializing local DB to sync data...")
                 
                 # Initialize local DB to access the data
@@ -371,6 +375,31 @@ class OnlineFirstDatabase:
             self.firebase_db.db.collection('nurse_visits').document(doc_id).set(visit_data)
         
         print(f"[ONLINE-FIRST] Synced {len(visits)} nurse visits")
+        
+        # Sync water visits
+        cursor.execute("""
+            SELECT w.student_uid, s.name, w.visit_start, w.visit_end, w.duration_minutes
+            FROM water_visits w
+            JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
+        """)
+        water_visits = cursor.fetchall()
+        
+        for student_uid, student_name, visit_start, visit_end, duration in water_visits:
+            start_iso = self._to_iso(visit_start) if visit_start else ''
+            end_iso = self._to_iso(visit_end) if visit_end else None
+            
+            visit_data = {
+                'student_uid': student_uid,
+                'student_name': student_name,
+                'visit_start': start_iso,
+                'visit_end': end_iso,
+                'duration_minutes': duration
+            }
+            
+            doc_id = f"{student_uid}_{start_iso}"
+            self.firebase_db.db.collection('water_visits').document(doc_id).set(visit_data)
+        
+        print(f"[ONLINE-FIRST] Synced {len(water_visits)} water visits")
     
     def _to_iso(self, timestamp):
         """Convert timestamp to ISO format"""
@@ -431,6 +460,7 @@ class OnlineFirstDatabase:
         cursor.execute("DELETE FROM attendance")
         cursor.execute("DELETE FROM bathroom_breaks")
         cursor.execute("DELETE FROM nurse_visits")
+        cursor.execute("DELETE FROM water_visits")
         # NOTE: We keep students in local DB - they'll be used again if we go offline
         self.local_db.conn.commit()
         print("[ONLINE-FIRST] Local activity data cleared (students retained)")
@@ -528,6 +558,32 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
     
+    def is_at_water(self, identifier):
+        """Check if student is at water fountain"""
+        if self.mode == "online" and self.firebase_db:
+            return self.firebase_db.is_at_water(identifier)
+        elif self.mode == "offline" and self.local_db:
+            return self.local_db.is_at_water(identifier)
+        return False
+    
+    def start_water_visit(self, nfc_uid=None, student_id=None):
+        """Start water visit"""
+        if self.mode == "online" and self.firebase_db:
+            return self.firebase_db.start_water_visit(nfc_uid, student_id)
+        elif self.mode == "offline" and self.local_db:
+            return self.local_db.start_water_visit(nfc_uid, student_id)
+        else:
+            return False, "Database not available"
+    
+    def end_water_visit(self, nfc_uid=None, student_id=None):
+        """End water visit"""
+        if self.mode == "online" and self.firebase_db:
+            return self.firebase_db.end_water_visit(nfc_uid, student_id)
+        elif self.mode == "offline" and self.local_db:
+            return self.local_db.end_water_visit(nfc_uid, student_id)
+        else:
+            return False, "Database not available"
+    
     def has_students_out(self):
         """Check if any students are out"""
         if self.mode == "online" and self.firebase_db:
@@ -544,6 +600,11 @@ class OnlineFirstDatabase:
                 
                 # Check for active nurse visits
                 cursor.execute("SELECT id FROM nurse_visits WHERE visit_end IS NULL LIMIT 1")
+                if cursor.fetchone():
+                    return True
+                
+                # Check for active water visits
+                cursor.execute("SELECT id FROM water_visits WHERE visit_end IS NULL LIMIT 1")
                 if cursor.fetchone():
                     return True
                 

@@ -428,11 +428,11 @@ class SettingsOverlay(QWidget):
     def update_active_breaks_status(self):
         """Update the active breaks status display"""
         try:
-            # Get active bathroom breaks and nurse visits
+            # Get active bathroom breaks, nurse visits, and water visits
             active_breaks = self.get_active_breaks_info()
             
             if not active_breaks:
-                self.active_breaks_label.setText("No active breaks or nurse visits")
+                self.active_breaks_label.setText("No active breaks or visits")
                 self.active_breaks_label.setStyleSheet("color: #27ae60; font-size: 11px; margin: 5px 0;")
             else:
                 break_text = f"Active: {len(active_breaks)} student(s) out"
@@ -444,80 +444,204 @@ class SettingsOverlay(QWidget):
             self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 11px; margin: 5px 0;")
     
     def get_active_breaks_info(self):
-        """Get information about active bathroom breaks and nurse visits"""
+        """Get information about active bathroom breaks, nurse visits, and water visits"""
         active_breaks = []
         
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.parent.db.db_name)
-            cursor = conn.cursor()
+            # Check if it's an online-first database in online mode (using Firebase)
+            if hasattr(self.parent.db, 'mode') and self.parent.db.mode == "online" and hasattr(self.parent.db, 'firebase_db') and self.parent.db.firebase_db:
+                # Query Firebase for active breaks
+                try:
+                    # Get active bathroom breaks from Firebase
+                    breaks_ref = self.parent.db.firebase_db.db.collection('bathroom_breaks')
+                    breaks_query = breaks_ref.where('break_end', '==', None).get()
+                    
+                    for doc in breaks_query:
+                        data = doc.to_dict()
+                        active_breaks.append({
+                            'name': data.get('student_name', 'Unknown'),
+                            'type': 'bathroom',
+                            'start_time': data.get('break_start', ''),
+                            'uid': data.get('student_uid', '')
+                        })
+                    
+                    # Get active nurse visits from Firebase
+                    nurse_ref = self.parent.db.firebase_db.db.collection('nurse_visits')
+                    nurse_query = nurse_ref.where('visit_end', '==', None).get()
+                    
+                    for doc in nurse_query:
+                        data = doc.to_dict()
+                        active_breaks.append({
+                            'name': data.get('student_name', 'Unknown'),
+                            'type': 'nurse',
+                            'start_time': data.get('visit_start', ''),
+                            'uid': data.get('student_uid', '')
+                        })
+                    
+                    # Get active water visits from Firebase
+                    water_ref = self.parent.db.firebase_db.db.collection('water_visits')
+                    water_query = water_ref.where('visit_end', '==', None).get()
+                    
+                    for doc in water_query:
+                        data = doc.to_dict()
+                        active_breaks.append({
+                            'name': data.get('student_name', 'Unknown'),
+                            'type': 'water',
+                            'start_time': data.get('visit_start', ''),
+                            'uid': data.get('student_uid', '')
+                        })
+                except Exception as e:
+                    print(f"Error querying Firebase for active breaks: {e}")
             
-            # Get active bathroom breaks
-            cursor.execute('''
-                SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
-                FROM bathroom_breaks b
-                JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
-                WHERE b.break_end IS NULL
-            ''')
+            # Access the database connection properly for SQLite databases
+            # Check if it's a hybrid database (has conn attribute)
+            elif hasattr(self.parent.db, 'conn') and self.parent.db.conn:
+                cursor = self.parent.db.conn.cursor()
+                
+                # Get active bathroom breaks
+                cursor.execute('''
+                    SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
+                    FROM bathroom_breaks b
+                    JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
+                    WHERE b.break_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                    })
+                
+                # Get active nurse visits
+                cursor.execute('''
+                    SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
+                    FROM nurse_visits n
+                    JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
+                    WHERE n.visit_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                    })
+                
+                # Get active water visits
+                cursor.execute('''
+                    SELECT s.name, 'water' as type, w.visit_start, w.student_uid
+                    FROM water_visits w
+                    JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
+                    WHERE w.visit_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                    })
             
-            for row in cursor.fetchall():
-                active_breaks.append({
-                    'name': row[0],
-                    'type': row[1],
-                    'start_time': row[2],
-                    'uid': row[3]  # Use the actual student_uid for ending breaks
-                })
-            
-            # Get active nurse visits
-            cursor.execute('''
-                SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
-                FROM nurse_visits n
-                JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
-                WHERE n.visit_end IS NULL
-            ''')
-            
-            for row in cursor.fetchall():
-                active_breaks.append({
-                    'name': row[0],
-                    'type': row[1],
-                    'start_time': row[2],
-                    'uid': row[3]  # Use the actual student_uid for ending breaks
-                })
-            
-            conn.close()
+            # If it's an online-first database in offline mode, try to access local_db
+            elif hasattr(self.parent.db, 'local_db') and self.parent.db.local_db and hasattr(self.parent.db.local_db, 'conn') and self.parent.db.local_db.conn:
+                cursor = self.parent.db.local_db.conn.cursor()
+                
+                # Get active bathroom breaks
+                cursor.execute('''
+                    SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
+                    FROM bathroom_breaks b
+                    JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
+                    WHERE b.break_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]
+                    })
+                
+                # Get active nurse visits
+                cursor.execute('''
+                    SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
+                    FROM nurse_visits n
+                    JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
+                    WHERE n.visit_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]
+                    })
+                
+                # Get active water visits
+                cursor.execute('''
+                    SELECT s.name, 'water' as type, w.visit_start, w.student_uid
+                    FROM water_visits w
+                    JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
+                    WHERE w.visit_end IS NULL
+                ''')
+                
+                for row in cursor.fetchall():
+                    active_breaks.append({
+                        'name': row[0],
+                        'type': row[1],
+                        'start_time': row[2],
+                        'uid': row[3]
+                    })
             
         except Exception as e:
             print(f"Error getting active breaks info: {e}")
+            import traceback
+            traceback.print_exc()
             
         return active_breaks
     
     def end_all_active_breaks(self):
-        """End all active bathroom breaks and nurse visits"""
+        """End all active bathroom breaks, nurse visits, and water visits"""
         try:
             # Get active breaks first
             active_breaks = self.get_active_breaks_info()
             
             if not active_breaks:
-                QMessageBox.information(self, "No Active Breaks", "There are currently no active bathroom breaks or nurse visits.")
+                QMessageBox.information(self, "No Active Breaks", "There are currently no active bathroom breaks, nurse visits, or water visits.")
                 return
             
             # Confirm action
             break_list = []
             for break_info in active_breaks:
-                break_list.append(f"• {break_info['name']} ({break_info['type']} break)")
+                type_label = break_info['type']
+                if type_label == 'bathroom':
+                    type_display = 'bathroom break'
+                elif type_label == 'nurse':
+                    type_display = 'nurse visit'
+                elif type_label == 'water':
+                    type_display = 'water visit'
+                else:
+                    type_display = type_label
+                break_list.append(f"• {break_info['name']} ({type_display})")
             
             break_text = "\\n".join(break_list)
             
             reply = QMessageBox.question(
                 self, 
                 "End Active Breaks", 
-                f"Are you sure you want to end all active breaks?\\n\\n{break_text}",
+                f"Are you sure you want to end all active breaks and visits?\\n\\n{break_text}",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             
             if reply == QMessageBox.Yes:
                 ended_count = 0
+                errors = []
                 
                 # End each active break
                 for break_info in active_breaks:
@@ -527,32 +651,64 @@ class SettingsOverlay(QWidget):
                             success, message = self.parent.db.end_bathroom_break(break_info['uid'])
                             if success:
                                 ended_count += 1
+                            else:
+                                errors.append(f"{break_info['name']} (bathroom): {message}")
                         elif break_info['type'] == 'nurse':
                             # End nurse visit using the stored UID
                             # Check if the UID looks like an NFC UID or student ID
-                            if len(break_info['uid']) > 10 or break_info['uid'].isalnum() and not break_info['uid'].isdigit():
+                            uid = break_info['uid']
+                            if len(uid) > 10 or (uid.isalnum() and not uid.isdigit()):
                                 # Looks like NFC UID
-                                success, message = self.parent.db.end_nurse_visit(nfc_uid=break_info['uid'])
+                                success, message = self.parent.db.end_nurse_visit(nfc_uid=uid)
                             else:
                                 # Looks like student ID
-                                success, message = self.parent.db.end_nurse_visit(student_id=break_info['uid'])
+                                success, message = self.parent.db.end_nurse_visit(student_id=uid)
                             if success:
                                 ended_count += 1
+                            else:
+                                errors.append(f"{break_info['name']} (nurse): {message}")
+                        elif break_info['type'] == 'water':
+                            # End water visit using the stored UID
+                            uid = break_info['uid']
+                            if len(uid) > 10 or (uid.isalnum() and not uid.isdigit()):
+                                # Looks like NFC UID
+                                success, message = self.parent.db.end_water_visit(nfc_uid=uid)
+                            else:
+                                # Looks like student ID
+                                success, message = self.parent.db.end_water_visit(student_id=uid)
+                            if success:
+                                ended_count += 1
+                            else:
+                                errors.append(f"{break_info['name']} (water): {message}")
                     except Exception as e:
-                        print(f"Error ending break for {break_info['name']}: {e}")
+                        error_msg = f"{break_info['name']} ({break_info['type']}): {str(e)}"
+                        print(f"Error ending break for {error_msg}")
+                        errors.append(error_msg)
                 
                 # Update status and show result
                 self.update_active_breaks_status()
                 self.parent.update_gpio_led_status()  # Update LED status
                 
-                QMessageBox.information(
-                    self, 
-                    "Breaks Ended", 
-                    f"Successfully ended {ended_count} active break(s)."
-                )
+                if errors:
+                    error_text = "\\n".join(errors[:5])  # Show first 5 errors
+                    if len(errors) > 5:
+                        error_text += f"\\n... and {len(errors) - 5} more errors"
+                    QMessageBox.warning(
+                        self, 
+                        "Breaks Ended with Errors", 
+                        f"Successfully ended {ended_count} active break(s).\\n\\nErrors:\\n{error_text}"
+                    )
+                else:
+                    QMessageBox.information(
+                        self, 
+                        "Breaks Ended", 
+                        f"Successfully ended {ended_count} active break(s)."
+                    )
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error ending active breaks: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def restart_application(self):
         """Restart the application"""
@@ -976,6 +1132,189 @@ class NurseOverlay(QWidget):
 
     def process_card(self, nfc_uid):
         self.parent.process_nurse_entry(nfc_uid=nfc_uid)
+        self.hide()
+
+
+class WaterOverlay(QWidget):
+    """Overlay for water fountain visit functionality."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(0,0,0,0.7);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setVisible(False)
+        self.setGeometry(parent.rect())
+        self.parent = parent
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Left side: Keypad (full height)
+        keypad_container = QWidget()
+        keypad_container.setStyleSheet("background: white; border-top-left-radius: 24px; border-bottom-left-radius: 24px;")
+        keypad_container.setFixedWidth(400)
+        keypad_layout = QVBoxLayout(keypad_container)
+        keypad_layout.setContentsMargins(24, 24, 24, 24)
+        keypad_layout.setSpacing(16)
+        
+        # Keypad title
+        keypad_title = QLabel("Enter ID Number")
+        keypad_title.setAlignment(Qt.AlignCenter)
+        keypad_title.setFont(QFont('Arial', 20, QFont.Bold))
+        keypad_title.setStyleSheet("color: #23405a; margin-bottom: 16px;")
+        keypad_layout.addWidget(keypad_title)
+        
+        # Input field
+        self.input = QLineEdit()
+        self.input.setAlignment(Qt.AlignCenter)
+        self.input.setFont(QFont('Arial', 24, QFont.Bold))
+        self.input.setReadOnly(True)
+        self.input.setStyleSheet(
+            "QLineEdit { background: #fff; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 12px; margin-bottom: 16px; }"
+        )
+        keypad_layout.addWidget(self.input)
+        
+        # Keypad grid
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        buttons = [
+            ('1', 0, 0), ('2', 0, 1), ('3', 0, 2),
+            ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
+            ('7', 2, 0), ('8', 2, 1), ('9', 2, 2),
+            ('Clear', 3, 0), ('0', 3, 1), ('OK', 3, 2)
+        ]
+        for text, row, col in buttons:
+            btn = QPushButton(text)
+            btn.setFont(QFont('Arial', 18, QFont.Bold))
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            btn.setMinimumHeight(60)
+            if text.isdigit():
+                btn.setStyleSheet(
+                    "QPushButton { background: #f5f7fa; color: #23405a; border-radius: 16px; border: 2px solid #23405a; }"
+                    "QPushButton:hover { background: #e0e7ef; }"
+                    "QPushButton:pressed { background: #cfd8e3; }"
+                )
+            elif text == 'Clear':
+                btn.setStyleSheet(
+                    "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 16px; border: 2px solid #b0b0b0; }"
+                    "QPushButton:hover { background: #cccccc; }"
+                    "QPushButton:pressed { background: #bbbbbb; }"
+                )
+            elif text == 'OK':
+                btn.setStyleSheet(
+                    "QPushButton { background: #3498db; color: white; border-radius: 16px; border: 2px solid #2980b9; }"
+                    "QPushButton:hover { background: #2980b9; }"
+                    "QPushButton:pressed { background: #21618c; }"
+                )
+            grid.addWidget(btn, row, col)
+            if text.isdigit():
+                btn.clicked.connect(lambda _, t=text: self.input.setText(self.input.text() + t))
+            elif text == 'Clear':
+                btn.clicked.connect(lambda: self.input.setText(''))
+            elif text == 'OK':
+                btn.clicked.connect(self.ok_pressed)
+        
+        keypad_layout.addLayout(grid)
+        keypad_layout.addStretch()
+        
+        # Right side: Text and info (full height)
+        text_container = QWidget()
+        text_container.setStyleSheet("background: white; border-top-right-radius: 24px; border-bottom-right-radius: 24px;")
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(40, 40, 40, 40)
+        text_layout.setSpacing(24)
+        
+        # Main title
+        main_title = QLabel("Water Fountain")
+        main_title.setAlignment(Qt.AlignCenter)
+        main_title.setFont(QFont('Arial', 24, QFont.Bold))
+        main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
+        text_layout.addWidget(main_title)
+        
+        # Instructions
+        instructions = QLabel("Scan your ID card or enter your ID number using the keypad on the left.")
+        instructions.setAlignment(Qt.AlignCenter)
+        instructions.setWordWrap(True)
+        instructions.setFont(QFont('Arial', 18))
+        instructions.setStyleSheet("color: #23405a; line-height: 1.4; margin-bottom: 32px;")
+        text_layout.addWidget(instructions)
+        
+        # Current status
+        self.status_label = QLabel("Ready to scan")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setFont(QFont('Arial', 20, QFont.Bold))
+        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
+        text_layout.addWidget(self.status_label)
+        
+        # Message area for errors/info
+        self.message_label = QLabel("")
+        self.message_label.setAlignment(Qt.AlignCenter)
+        self.message_label.setWordWrap(True)
+        self.message_label.setFont(QFont('Arial', 16))
+        self.message_label.setStyleSheet("color: #b71c1c; margin-bottom: 32px;")
+        self.message_label.hide()
+        text_layout.addWidget(self.message_label)
+        
+        text_layout.addStretch()
+        
+        # Cancel button at bottom
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setFont(QFont('Arial', 18, QFont.Bold))
+        cancel_btn.setStyleSheet('''
+            QPushButton { 
+                background: #e0e0e0; 
+                color: #23405a; 
+                border-radius: 16px; 
+                padding: 16px 0; 
+                border: 2px solid #b0b0b0; 
+            } 
+            QPushButton:hover { 
+                background: #cccccc; 
+            } 
+            QPushButton:pressed { 
+                background: #bbbbbb; 
+            }
+        ''')
+        cancel_btn.clicked.connect(self.hide)
+        text_layout.addWidget(cancel_btn)
+        
+        # Add both containers to main layout
+        layout.addWidget(keypad_container)
+        layout.addWidget(text_container)
+        
+        # Message timer
+        self._message_timer = QTimer(self)
+        self._message_timer.setSingleShot(True)
+        self._message_timer.timeout.connect(self.clear_message)
+
+    def show_overlay(self):
+        self.input.setText("")
+        self.setGeometry(self.parent.rect())
+        self.setVisible(True)
+        self.raise_()
+        self.clear_message()
+        self.status_label.setText("Ready to scan")
+        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
+
+    def show_message(self, message, duration=4000):
+        self.message_label.setText(message)
+        self.message_label.show()
+        self._message_timer.start(duration)
+
+    def clear_message(self):
+        self.message_label.hide()
+        self.message_label.setText("")
+
+    def ok_pressed(self):
+        student_id = self.input.text()
+        if student_id:
+            self.parent.process_water_entry(student_id=student_id)
+            self.hide()
+
+    def process_card(self, nfc_uid):
+        self.parent.process_water_entry(nfc_uid=nfc_uid)
         self.hide()
 
 
@@ -1495,21 +1834,6 @@ class StudentSelectionOverlay(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.hide()
-    
-    def show_message(self, message, is_error=True, duration=4000):
-        """Show a message with specified styling"""
-        self.message_label.setText(message)
-        if is_error:
-            self.message_label.setStyleSheet("color: #b71c1c; margin: 16px 0; background: #ffebee; padding: 8px; border-radius: 8px; border: 1px solid #ffcdd2;")
-        else:
-            self.message_label.setStyleSheet("color: #2e7d32; margin: 16px 0; background: #e8f5e8; padding: 8px; border-radius: 8px; border: 1px solid #c8e6c9;")
-        self.message_label.show()
-        self._message_timer.start(duration)
-    
-    def clear_message(self):
-        """Clear the message"""
-        self.message_label.hide()
-        self.message_label.setText("")
     
     def show_message(self, message, is_error=True, duration=4000):
         """Show a message with specified styling"""

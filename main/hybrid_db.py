@@ -40,7 +40,8 @@ class HybridDatabase(StudentDatabase):
             'students': set(),
             'attendance': set(), 
             'bathroom_breaks': set(),
-            'nurse_visits': set()
+            'nurse_visits': set(),
+            'water_visits': set()
         }
         self.changes_lock = threading.Lock()
         
@@ -96,6 +97,7 @@ class HybridDatabase(StudentDatabase):
             self._sync_attendance_from_firestore()
             self._sync_breaks_from_firestore()
             self._sync_nurse_visits_from_firestore()
+            self._sync_water_visits_from_firestore()
             
             self.last_sync = datetime.now()
             print(f"[HYBRID] Initial sync completed at {self.last_sync}")
@@ -142,6 +144,9 @@ class HybridDatabase(StudentDatabase):
             
             # Sync active nurse visits from Firestore
             self._sync_nurse_visits_from_firestore()
+            
+            # Sync active water visits from Firestore
+            self._sync_water_visits_from_firestore()
             
             print("[HYBRID] Sync from Firebase Firestore completed")
             
@@ -196,6 +201,10 @@ class HybridDatabase(StudentDatabase):
                 # Sync nurse visits changes
                 if self.pending_changes['nurse_visits']:
                     self._sync_nurse_visits_to_firestore()
+                
+                # Sync water visits changes
+                if self.pending_changes['water_visits']:
+                    self._sync_water_visits_to_firestore()
                 
                 # Clear pending changes
                 for key in self.pending_changes:
@@ -428,6 +437,75 @@ class HybridDatabase(StudentDatabase):
             
         except Exception as e:
             print(f"[HYBRID] Error syncing nurse visits from Firebase Firestore: {e}")
+    
+    def _sync_water_visits_from_firestore(self):
+        """Sync active water visits from Firebase Firestore to local database"""
+        try:
+            today = datetime.now().date().isoformat()
+            water_ref = self.firebase_db.db.collection('water_visits').get()
+            
+            cursor = self.conn.cursor()
+            
+            for doc in water_ref:
+                data = doc.to_dict()
+                # Sync today's visits or active visits
+                visit_start = data.get('visit_start', '')
+                if visit_start:
+                    try:
+                        visit_date = datetime.fromisoformat(visit_start).date().isoformat()
+                        if visit_date == today:
+                            student_uid = data.get('student_uid', '')
+                            
+                            # Normalize the visit_start for comparison (convert to datetime and back)
+                            try:
+                                visit_start_dt = datetime.fromisoformat(visit_start)
+                                # Convert to a consistent format for comparison
+                                normalized_start = visit_start_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+                            except:
+                                normalized_start = visit_start
+                            
+                            # Check if this visit already exists locally (need to check both formats)
+                            cursor.execute("""
+                                SELECT id, visit_end FROM water_visits
+                                WHERE student_uid = ? AND (visit_start = ? OR visit_start = ?)
+                            """, (student_uid, visit_start, normalized_start))
+                            existing = cursor.fetchone()
+                            
+                            if existing:
+                                existing_id, existing_visit_end = existing
+                                # Only update if local visit_end is null (not ended yet)
+                                # Don't overwrite local changes with null from Firebase
+                                if existing_visit_end is None and data.get('visit_end'):
+                                    cursor.execute("""
+                                        UPDATE water_visits
+                                        SET visit_end = ?, duration_minutes = ?
+                                        WHERE id = ?
+                                    """, (
+                                        data.get('visit_end', ''),
+                                        data.get('duration_minutes', ''),
+                                        existing_id
+                                    ))
+                                # If local has visit_end but Firebase doesn't, keep local version
+                            else:
+                                # Insert new visit from Firebase
+                                cursor.execute("""
+                                    INSERT INTO water_visits 
+                                    (student_uid, visit_start, visit_end, duration_minutes)
+                                    VALUES (?, ?, ?, ?)
+                                """, (
+                                    student_uid,
+                                    data.get('visit_start', ''),
+                                    data.get('visit_end', ''),
+                                    data.get('duration_minutes', '')
+                                ))
+                    except Exception as e:
+                        print(f"[HYBRID] Error syncing water visit: {e}")
+            
+            self.conn.commit()
+            print(f"[HYBRID] Synced water visits from Firebase Firestore")
+            
+        except Exception as e:
+            print(f"[HYBRID] Error syncing water visits from Firebase Firestore: {e}")
     
     def _sync_students_to_firestore(self):
         """Sync student changes to Firebase Firestore"""
@@ -679,6 +757,66 @@ class HybridDatabase(StudentDatabase):
             
             print(f"[HYBRID] Synced {len(visits)} nurse visits to Firebase Firestore")
     
+    def _sync_water_visits_to_firestore(self):
+        """Sync water visits to Firebase Firestore"""
+        cursor = self.conn.cursor()
+        today = datetime.now().date().isoformat()
+        cursor.execute("""
+            SELECT w.id, w.student_uid, s.name, w.visit_start, w.visit_end, w.duration_minutes
+            FROM water_visits w
+            JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
+            WHERE date(w.visit_start) = ?
+        """, (today,))
+        
+        visits = cursor.fetchall()
+        
+        if visits:
+            water_ref = self.firebase_db.db.collection('water_visits')
+            
+            for visit_id, student_uid, student_name, visit_start, visit_end, duration in visits:
+                # Convert timestamps to ISO format if they're strings
+                if isinstance(visit_start, str):
+                    try:
+                        visit_start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S.%f")
+                        visit_start_iso = visit_start_dt.isoformat()
+                    except ValueError:
+                        try:
+                            visit_start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S")
+                            visit_start_iso = visit_start_dt.isoformat()
+                        except ValueError:
+                            visit_start_iso = visit_start
+                else:
+                    visit_start_iso = visit_start.isoformat() if visit_start else ''
+                
+                if isinstance(visit_end, str):
+                    try:
+                        visit_end_dt = datetime.strptime(visit_end, "%Y-%m-%d %H:%M:%S.%f")
+                        visit_end_iso = visit_end_dt.isoformat()
+                    except ValueError:
+                        try:
+                            visit_end_dt = datetime.strptime(visit_end, "%Y-%m-%d %H:%M:%S")
+                            visit_end_iso = visit_end_dt.isoformat()
+                        except ValueError:
+                            visit_end_iso = visit_end
+                elif visit_end:
+                    visit_end_iso = visit_end.isoformat()
+                else:
+                    visit_end_iso = None
+                
+                visit_data = {
+                    'student_uid': student_uid,
+                    'student_name': student_name,
+                    'visit_start': visit_start_iso,
+                    'visit_end': visit_end_iso,  # Keep as None for active visits
+                    'duration_minutes': duration  # Keep as None for active visits
+                }
+                
+                # Use a composite key for the document ID based on ISO format
+                doc_id = f"{student_uid}_{visit_start_iso}"
+                water_ref.document(doc_id).set(visit_data)
+            
+            print(f"[HYBRID] Synced {len(visits)} water visits to Firebase Firestore")
+    
     def _track_change(self, table, record_id=None):
         """Track a change that needs to be synced"""
         with self.changes_lock:
@@ -774,9 +912,43 @@ class HybridDatabase(StudentDatabase):
             self._track_change('nurse_visits')
         return result
     
+    def start_water_visit(self, nfc_uid=None, student_id=None):
+        """Start a water fountain visit and track for sync (with auto-check-in)"""
+        identifier = self.get_identifier(nfc_uid, student_id)
+        if not identifier:
+            return False, "No student identifier provided"
+        
+        # Check if student is checked in, if not, auto-check-in first
+        if not self.is_checked_in(identifier):
+            print(f"[HYBRID] Student {identifier} not checked in, auto-checking in...")
+            
+            # Use the provided parameters for check-in
+            if nfc_uid:
+                check_in_result = self.check_in(nfc_uid=nfc_uid)
+            elif student_id:
+                check_in_result = self.check_in(student_id=student_id)
+            else:
+                return False, "No student identifier provided"
+            
+            if not check_in_result[0]:
+                return False, f"Auto-check-in failed: {check_in_result[1]}"
+            print(f"[HYBRID] Auto-check-in successful")
+        
+        result = super().start_water_visit(nfc_uid, student_id)
+        if result[0]:  # If successful
+            self._track_change('water_visits')
+        return result
+    
+    def end_water_visit(self, nfc_uid=None, student_id=None):
+        """End a water fountain visit and track for sync"""
+        result = super().end_water_visit(nfc_uid, student_id)
+        if result[0]:  # If successful
+            self._track_change('water_visits')
+        return result
+    
     # Additional methods needed for compatibility with existing code
     def has_students_out(self):
-        """Check if any students are currently out (bathroom break or nurse visit)"""
+        """Check if any students are currently out (bathroom break, nurse visit, or water visit)"""
         cursor = self.conn.cursor()
         
         # Check for active bathroom breaks
@@ -786,6 +958,11 @@ class HybridDatabase(StudentDatabase):
         
         # Check for active nurse visits
         cursor.execute("SELECT id FROM nurse_visits WHERE visit_end IS NULL LIMIT 1")
+        if cursor.fetchone():
+            return True
+        
+        # Check for active water visits
+        cursor.execute("SELECT id FROM water_visits WHERE visit_end IS NULL LIMIT 1")
         if cursor.fetchone():
             return True
         
@@ -900,7 +1077,7 @@ class HybridDatabase(StudentDatabase):
         return result
 
     def _auto_end_breaks_and_visits_at_period_end(self):
-        """Automatically end active bathroom breaks and nurse visits when the current period ends"""
+        """Automatically end active bathroom breaks, nurse visits, and water visits when the current period ends"""
         try:
             now = datetime.now()
 
@@ -983,6 +1160,37 @@ class HybridDatabase(StudentDatabase):
                 except Exception as e:
                     print(f"[AUTO-END] Error ending nurse visit {visit_id}: {e}")
 
+            # Auto-end water visits
+            cursor.execute("""
+                SELECT w.id, w.student_uid, w.visit_start
+                FROM water_visits w
+                WHERE w.visit_end IS NULL
+            """)
+
+            active_water_visits = cursor.fetchall()
+            for visit_id, student_uid, visit_start_str in active_water_visits:
+                try:
+                    # Parse visit start time
+                    visit_start_dt = datetime.fromisoformat(visit_start_str.replace(' ', 'T'))
+
+                    # Only auto-end visits that started before the period end
+                    if visit_start_dt < period_end_dt:
+                        # Calculate duration
+                        duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+
+                        # End the visit
+                        cursor.execute("""
+                            UPDATE water_visits
+                            SET visit_end = ?, duration_minutes = ?
+                            WHERE id = ?
+                        """, (period_end_dt, duration, visit_id))
+
+                        print(f"[AUTO-END] Ended water visit for {student_uid} (duration: {duration}min)")
+                        self._track_change('water_visits')
+
+                except Exception as e:
+                    print(f"[AUTO-END] Error ending water visit {visit_id}: {e}")
+
             self.conn.commit()
 
         except Exception as e:
@@ -1031,6 +1239,21 @@ class HybridDatabase(StudentDatabase):
             
         except Exception as e:
             print(f"[HYBRID] Error clearing nurse visits data: {e}")
+            return False, str(e)
+    
+    def clear_water_visits_data(self):
+        """Clear all water visit records from local database"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM water_visits")
+            self.conn.commit()
+            
+            count = cursor.rowcount
+            print(f"[HYBRID] Cleared {count} water visit records from local database")
+            return True, f"Cleared {count} water visit records"
+            
+        except Exception as e:
+            print(f"[HYBRID] Error clearing water visits data: {e}")
             return False, str(e)
     
     def clear_firestore_attendance(self):
@@ -1090,6 +1313,25 @@ class HybridDatabase(StudentDatabase):
             print(f"[HYBRID] Error clearing Firebase Firestore nurse visits: {e}")
             return False, str(e)
     
+    def clear_firestore_water_visits(self):
+        """Clear all water visit records from Firebase Firestore"""
+        if not self.firebase_db:
+            return False, "Firebase Firestore not connected"
+            
+        try:
+            water_ref = self.firebase_db.db.collection('water_visits')
+            docs = water_ref.get()
+            
+            for doc in docs:
+                doc.reference.delete()
+            
+            print("[HYBRID] Cleared Firebase Firestore water visits data")
+            return True, "Firebase Firestore water visits cleared"
+            
+        except Exception as e:
+            print(f"[HYBRID] Error clearing Firebase Firestore water visits: {e}")
+            return False, str(e)
+    
     def clear_all_activity_data(self, include_firestore=True):
         """Clear all attendance, bathroom breaks, and nurse visits (keeps students)"""
         print("[HYBRID] Clearing all activity data...")
@@ -1108,6 +1350,9 @@ class HybridDatabase(StudentDatabase):
             
             success, message = self.clear_firestore_nurse_visits()
             results.append(f"Firebase Firestore Nurse visits: {message}")
+            
+            success, message = self.clear_firestore_water_visits()
+            results.append(f"Firebase Firestore Water visits: {message}")
         
         # Clear local database
         print("[HYBRID] Clearing local database...")
@@ -1123,6 +1368,10 @@ class HybridDatabase(StudentDatabase):
         # Clear nurse visits
         success, message = self.clear_nurse_visits_data()
         results.append(f"Local Nurse visits: {message}")
+        
+        # Clear water visits
+        success, message = self.clear_water_visits_data()
+        results.append(f"Local Water visits: {message}")
         
         print("[HYBRID] Activity data clearing completed")
         return results

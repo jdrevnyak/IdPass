@@ -82,6 +82,18 @@ class StudentDatabase:
         )
         ''')
         
+        # Create water_visits table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS water_visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_uid TEXT,
+            visit_start TIMESTAMP,
+            visit_end TIMESTAMP,
+            duration_minutes INTEGER,
+            FOREIGN KEY (student_uid) REFERENCES students (id)
+        )
+        ''')
+        
         self.conn.commit()
     
     def __del__(self):
@@ -609,6 +621,95 @@ class StudentDatabase:
                     continue
             formatted_results.append((student_id, start_dt, end_dt, duration))
         return formatted_results
+    
+    def is_at_water(self, identifier):
+        """Check if student is currently at the water fountain by identifier (NFC UID or student_id)"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, visit_start 
+            FROM water_visits 
+            WHERE student_uid = ? 
+            AND visit_end IS NULL
+        """, (identifier,))
+        result = cursor.fetchone()
+        return result is not None
+    
+    def start_water_visit(self, nfc_uid=None, student_id=None):
+        """Start a water fountain visit for a student by identifier (NFC UID or student_id)"""
+        identifier = self.get_identifier(nfc_uid, student_id)
+        if not self.is_checked_in(identifier):
+            return False, "Student is not checked in"
+        try:
+            cursor = self.conn.cursor()
+            # Check if this student has an active water visit
+            cursor.execute("""
+                SELECT id FROM water_visits 
+                WHERE student_uid = ? 
+                AND visit_end IS NULL
+            """, (identifier,))
+            if cursor.fetchone():
+                return False, "Student is already at the water fountain"
+            # Start new water visit
+            current_time = datetime.now()
+            cursor.execute("""
+                INSERT INTO water_visits (student_uid, visit_start)
+                VALUES (?, ?)
+            """, (identifier, current_time))
+            self.conn.commit()
+            return True, "Water visit started"
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+    
+    def end_water_visit(self, nfc_uid=None, student_id=None):
+        """End a water fountain visit for a student by identifier (NFC UID or student_id)"""
+        identifier = self.get_identifier(nfc_uid, student_id)
+        try:
+            cursor = self.conn.cursor()
+            # Get the active water visit
+            cursor.execute("""
+                SELECT id, visit_start 
+                FROM water_visits
+                WHERE student_uid = ? 
+                AND visit_end IS NULL
+            """, (identifier,))
+            result = cursor.fetchone()
+            if not result:
+                return False, "Student is not at the water fountain"
+            visit_id, visit_start = result
+            visit_end = datetime.now()
+            # Calculate duration
+            try:
+                # Try parsing as string first (for old data)
+                if isinstance(visit_start, str):
+                    try:
+                        # Try ISO format first (with T separator)
+                        start_dt = datetime.fromisoformat(visit_start)
+                    except ValueError:
+                        try:
+                            # Try with microseconds
+                            start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S.%f")
+                        except ValueError:
+                            # Try without microseconds
+                            start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S")
+                else:
+                    # Already a datetime object
+                    start_dt = visit_start
+            except Exception as e:
+                print(f"Error parsing visit_start: {e}")
+                start_dt = visit_end  # Fallback to avoid errors
+            
+            duration = int((visit_end - start_dt).total_seconds() / 60)
+            cursor.execute("""
+                UPDATE water_visits
+                SET visit_end = ?, duration_minutes = ?
+                WHERE id = ?
+            """, (visit_end, duration, visit_id))
+            self.conn.commit()
+            return True, "Water visit ended"
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
     
     def auto_checkout_students(self):
         """Automatically check out students whose scheduled_check_out time has passed and check_out is NULL."""

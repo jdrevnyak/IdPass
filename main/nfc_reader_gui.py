@@ -28,7 +28,7 @@ from online_first_db import OnlineFirstDatabase
 from widgets import AnalogClock, StatusIndicator
 from dialogs import AddStudentDialog, ImportDialog
 from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay, 
-                     NurseOverlay, AddStudentOverlay, StudentSelectionOverlay)
+                     NurseOverlay, WaterOverlay, AddStudentOverlay, StudentSelectionOverlay)
 from updater import UpdateManager
 
 
@@ -106,7 +106,8 @@ class NFCReaderGUI(QMainWindow):
         button_layout.setSpacing(32)
         self.break_start_button = QPushButton("Bathroom")
         self.nurse_button = QPushButton("Nurse")
-        for btn in [self.break_start_button, self.nurse_button]:
+        self.water_button = QPushButton("Water")
+        for btn in [self.break_start_button, self.nurse_button, self.water_button]:
             btn.setMinimumSize(340, 80)
             btn.setFont(QFont('Arial', 32, QFont.Bold))
             btn.setCursor(Qt.PointingHandCursor)
@@ -138,8 +139,23 @@ class NFCReaderGUI(QMainWindow):
                 background-color: #162534;
             }
         ''')
+        self.water_button.setStyleSheet('''
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border-radius: 24px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #21618c;
+            }
+        ''')
         button_layout.addWidget(self.break_start_button)
         button_layout.addWidget(self.nurse_button)
+        button_layout.addWidget(self.water_button)
         center_layout.addLayout(button_layout)
         
         main_layout.addLayout(center_layout)
@@ -205,6 +221,10 @@ class NFCReaderGUI(QMainWindow):
         self.nurse_button.clicked.connect(self.show_nurse_overlay)
         self.nurse_overlay = NurseOverlay(self)
         
+        # Connect water button to water overlay
+        self.water_button.clicked.connect(self.show_water_overlay)
+        self.water_overlay = WaterOverlay(self)
+        
         # Try to auto-connect to ESP32
         self.auto_connect_esp32()
         
@@ -220,7 +240,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.14",  # Update this version number for each release
+            current_version="1.0.15",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -573,6 +593,10 @@ class NFCReaderGUI(QMainWindow):
     def show_nurse_overlay(self):
         """Show the nurse visit overlay"""
         self.nurse_overlay.show_overlay()
+    
+    def show_water_overlay(self):
+        """Show the water fountain overlay"""
+        self.water_overlay.show_overlay()
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
@@ -666,6 +690,50 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.prompt.setText(message)
 
+    def process_water_entry(self, student_id=None, nfc_uid=None):
+        """Process water fountain visit entry/exit"""
+        # Unified logic: use nfc_uid if available, else use student_id
+        if nfc_uid:
+            result = self.db.get_student_by_uid(nfc_uid)
+            if not result:
+                self.prompt.setText("No student found with that card.")
+                return
+            student_id_db, _ = result
+            identifier = nfc_uid if nfc_uid else student_id_db
+        elif student_id:
+            result = self.db.get_student_by_student_id(student_id)
+            if not result:
+                self.prompt.setText("No student found with that ID.")
+                return
+            nfc_uid_db, _ = result
+            identifier = nfc_uid_db if nfc_uid_db else student_id
+        else:
+            self.prompt.setText("No student information provided.")
+            return
+
+        print(f"[DEBUG] Water entry using identifier: {identifier}")
+        is_at_water = self.db.is_at_water(identifier)
+        if is_at_water:
+            # Pass the correct parameters to end_water_visit
+            success, message = self.db.end_water_visit(nfc_uid=nfc_uid, student_id=student_id)
+            if success:
+                self.prompt.setText("Water visit ended!")
+                self.update_gpio_led_status()  # Immediately update GPIO LED
+                QTimer.singleShot(3000, self.water_overlay.hide)
+                QTimer.singleShot(3000, lambda: self.prompt.setText("Tap your ID or enter ID number"))
+            else:
+                self.prompt.setText(message)
+        else:
+            # Let start_water_visit handle auto-check-in
+            success, message = self.db.start_water_visit(nfc_uid=nfc_uid, student_id=student_id)
+            if success:
+                self.prompt.setText("Water visit started!")
+                self.update_gpio_led_status()  # Immediately update GPIO LED
+                QTimer.singleShot(3000, self.water_overlay.hide)
+                QTimer.singleShot(3000, lambda: self.prompt.setText("Tap your ID or enter ID number"))
+            else:
+                self.prompt.setText(message)
+
     def read_serial(self):
         """Read data from serial connection and process NFC cards"""
         if not self.serial_connection:
@@ -692,6 +760,11 @@ class NFCReaderGUI(QMainWindow):
                         if self.nurse_overlay.isVisible():
                             print(f"[DEBUG] Processing nurse entry with UID: {uid}")
                             self.nurse_overlay.process_card(uid)
+                            return
+                        
+                        if self.water_overlay.isVisible():
+                            print(f"[DEBUG] Processing water entry with UID: {uid}")
+                            self.water_overlay.process_card(uid)
                             return
                         
                         # Normal check-in process
