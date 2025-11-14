@@ -123,8 +123,8 @@ class OnScreenKeyboard(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         container = QWidget()
-        container.setStyleSheet("background: white; border-radius: 24px;")
-        container.setFixedSize(640, 360)
+        container.setStyleSheet("background: white; border-radius: 28px;")
+        container.setFixedSize(760, 420)
         vbox = QVBoxLayout(container)
         vbox.setAlignment(Qt.AlignTop)
         vbox.setContentsMargins(24, 24, 24, 24)
@@ -132,16 +132,16 @@ class OnScreenKeyboard(QWidget):
 
         self.title_label = QLabel("On-Screen Keyboard")
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setFont(QFont('Arial', 20, QFont.Bold))
+        self.title_label.setFont(QFont('Arial', 24, QFont.Bold))
         self.title_label.setStyleSheet("color: #23405a;")
         vbox.addWidget(self.title_label)
 
         self.preview_field = QLineEdit()
         self.preview_field.setReadOnly(True)
         self.preview_field.setAlignment(Qt.AlignCenter)
-        self.preview_field.setFont(QFont('Arial', 20, QFont.Bold))
+        self.preview_field.setFont(QFont('Arial', 24, QFont.Bold))
         self.preview_field.setStyleSheet(
-            "QLineEdit { background: #f5f7fa; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 10px; }"
+            "QLineEdit { background: #f5f7fa; color: #23405a; border: 3px solid #1f8b83; border-radius: 16px; padding: 14px; }"
         )
         vbox.addWidget(self.preview_field)
 
@@ -158,8 +158,8 @@ class OnScreenKeyboard(QWidget):
             row_layout.setAlignment(Qt.AlignCenter)
             for key in row_keys:
                 btn = QPushButton(key)
-                btn.setFixedSize(50, 50)
-                btn.setFont(QFont('Arial', 18, QFont.Bold))
+                btn.setFixedSize(64, 64)
+                btn.setFont(QFont('Arial', 20, QFont.Bold))
                 btn.setStyleSheet(
                     "QPushButton { background: #e8edf5; color: #23405a; border-radius: 10px; border: 2px solid #d0dae8; }"
                     "QPushButton:hover { background: #d7e1f0; }"
@@ -170,20 +170,23 @@ class OnScreenKeyboard(QWidget):
             vbox.addLayout(row_layout)
 
         control_layout = QHBoxLayout()
-        control_layout.setSpacing(12)
+        control_layout.setSpacing(14)
 
-        for label, handler, style in [
+        control_buttons = [
             ("Space", self._append_space, "#2bb3a3"),
             ("Backspace", self._backspace, "#e67e22"),
             ("Clear", self._clear_text, "#c0392b"),
             ("Done", self.hide, "#3498db"),
-        ]:
+        ]
+
+        for label, handler, style in control_buttons:
             btn = QPushButton(label)
-            btn.setFont(QFont('Arial', 16, QFont.Bold))
+            btn.setMinimumSize(0, 64)
+            btn.setFont(QFont('Arial', 18, QFont.Bold))
             btn.setStyleSheet(
-                f"QPushButton {{ background: {style}; color: white; border-radius: 12px; padding: 12px 18px; }}"
-                f"QPushButton:hover {{ background: {self._darken_color(style, 0.85)}; }}"
-                f"QPushButton:pressed {{ background: {self._darken_color(style, 0.7)}; }}"
+                f"QPushButton {{ background: {style}; color: white; border-radius: 16px; padding: 18px 22px; }}"
+                f"QPushButton:hover {{ background: {self._darken_color(style, 0.88)}; }}"
+                f"QPushButton:pressed {{ background: {self._darken_color(style, 0.75)}; }}"
             )
             btn.clicked.connect(handler)
             control_layout.addWidget(btn)
@@ -377,16 +380,36 @@ class SettingsOverlay(QWidget):
         form_layout = QFormLayout()
         form_layout.setLabelAlignment(Qt.AlignLeft)
 
+        input_style = (
+            "QLineEdit {"
+            " font-size: 20px;"
+            " font-weight: bold;"
+            " color: #23405a;"
+            " padding: 14px;"
+            " border: 2px solid #2bb3a3;"
+            " border-radius: 14px;"
+            " background: #f8fbfd;"
+            " min-height: 52px;"
+            "}"
+            "QLineEdit:focus {"
+            " border-color: #1f8b83;"
+            " background: #ffffff;"
+            "}"
+        )
+
         self.classroom_id_input = QLineEdit()
         self.classroom_id_input.setPlaceholderText("e.g., 201, Library, Lab-A")
+        self.classroom_id_input.setStyleSheet(input_style)
         form_layout.addRow("Classroom ID*", self.classroom_id_input)
 
         self.classroom_label_input = QLineEdit()
         self.classroom_label_input.setPlaceholderText("Optional display name (e.g., Mrs. Smith Homeroom)")
+        self.classroom_label_input.setStyleSheet(input_style)
         form_layout.addRow("Display Name", self.classroom_label_input)
 
         self.teacher_name_input = QLineEdit()
         self.teacher_name_input.setPlaceholderText("Teacher name for this device")
+        self.teacher_name_input.setStyleSheet(input_style)
         form_layout.addRow("Teacher", self.teacher_name_input)
 
         classroom_layout.addLayout(form_layout)
@@ -394,13 +417,24 @@ class SettingsOverlay(QWidget):
         classroom_buttons = QHBoxLayout()
         classroom_buttons.setSpacing(12)
 
+        button_style_template = (
+            "QPushButton {{ background: {}; color: white; border-radius: 14px; padding: 14px 18px; font-size: 18px; }}"
+            "QPushButton:hover {{ background: {}; }}"
+            "QPushButton:pressed {{ background: {}; }}"
+        )
         save_classroom_btn = QPushButton("Save Classroom Info")
-        save_classroom_btn.setStyleSheet('QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 8px 16px; } QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }')
+        save_classroom_btn.setMinimumHeight(58)
+        save_classroom_btn.setStyleSheet(button_style_template.format("#2bb3a3", "#249e90", "#1e857a"))
         save_classroom_btn.clicked.connect(self.save_classroom_settings)
         classroom_buttons.addWidget(save_classroom_btn)
 
         reset_classroom_btn = QPushButton("Reset")
-        reset_classroom_btn.setStyleSheet('QPushButton { background: #e0e0e0; color: #23405a; border-radius: 8px; padding: 8px 16px; } QPushButton:hover { background: #cccccc; } QPushButton:pressed { background: #bbbbbb; }')
+        reset_classroom_btn.setMinimumHeight(58)
+        reset_classroom_btn.setStyleSheet(
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 14px; padding: 14px 18px; font-size: 18px; } "
+            "QPushButton:hover { background: #cccccc; } "
+            "QPushButton:pressed { background: #bbbbbb; }"
+        )
         reset_classroom_btn.clicked.connect(self.populate_classroom_fields)
         classroom_buttons.addWidget(reset_classroom_btn)
 

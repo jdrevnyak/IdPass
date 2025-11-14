@@ -161,9 +161,13 @@ class NFCReaderGUI(QMainWindow):
                 background-color: #21618c;
             }
         ''')
+        button_layout.addStretch(1)
         button_layout.addWidget(self.break_start_button)
+        button_layout.addStretch(1)
         button_layout.addWidget(self.nurse_button)
+        button_layout.addStretch(1)
         button_layout.addWidget(self.water_button)
+        button_layout.addStretch(1)
         center_layout.addLayout(button_layout)
         
         main_layout.addLayout(center_layout)
@@ -249,7 +253,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.17",  # Update this version number for each release
+            current_version="1.0.18",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -274,8 +278,7 @@ class NFCReaderGUI(QMainWindow):
             self.classroom_label 
             or (f"Classroom {self.classroom_id}" if self.classroom_id else "Classroom not configured")
         )
-        teacher_display = self.teacher_name or "Teacher not configured"
-        self.prompt.setText(f"{classroom_display} • {teacher_display}\nTap your ID or enter ID number")
+        self.prompt.setText(f"{classroom_display}\nTap your ID or enter ID number")
 
     def save_classroom_settings(self, classroom_id, classroom_label, teacher_name):
         """Persist classroom settings and refresh UI."""
