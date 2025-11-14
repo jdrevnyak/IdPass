@@ -690,6 +690,20 @@ class OnlineFirstDatabase:
         if self.firebase_db:
             return self.firebase_db.get_students_without_nfc_uid()
         return []
+
+    def get_active_outings(self):
+        """Return active outings depending on current mode."""
+        if self.mode == "online" and self.firebase_db:
+            try:
+                return self.firebase_db.get_active_outings()
+            except Exception as exc:
+                print(f"[ONLINE-FIRST] Error fetching online outings: {exc}")
+        if self.local_db:
+            try:
+                return self.local_db.get_active_outings()
+            except Exception as exc:
+                print(f"[ONLINE-FIRST] Error fetching local outings: {exc}")
+        return []
     
     def link_nfc_card_to_student(self, nfc_uid, student_id):
         """Link NFC card to student"""

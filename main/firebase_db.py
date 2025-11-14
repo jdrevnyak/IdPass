@@ -556,6 +556,40 @@ class FirebaseDatabase:
         except Exception as e:
             print(f"[FIREBASE] Error getting students without NFC UID: {e}")
             return []
+
+    def get_active_outings(self) -> List[Dict]:
+        """Return active outings with start times for this classroom."""
+        outings = []
+
+        def _collect(collection_name, end_field, outing_type, time_field):
+            collection_ref = self.db.collection(collection_name)
+            query = (
+                collection_ref
+                .where(end_field, '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
+            for doc in query:
+                data = doc.to_dict()
+                start_str = data.get(time_field)
+                if not start_str:
+                    continue
+                try:
+                    start_dt = datetime.fromisoformat(start_str)
+                except Exception:
+                    continue
+                outings.append({
+                    'type': outing_type,
+                    'student_name': data.get('student_name', 'Unknown'),
+                    'start': start_dt
+                })
+
+        _collect('bathroom_breaks', 'break_end', 'Bathroom', 'break_start')
+        _collect('nurse_visits', 'visit_end', 'Nurse', 'visit_start')
+        _collect('water_visits', 'visit_end', 'Water', 'visit_start')
+
+        outings.sort(key=lambda o: o['start'])
+        return outings
     
     def link_nfc_card_to_student(self, nfc_uid: str, student_id: str) -> Tuple[bool, str]:
         """Link an NFC card UID to a student"""

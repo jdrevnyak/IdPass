@@ -183,6 +183,8 @@ class NFCReaderGUI(QMainWindow):
         self.prompt.setFont(QFont('Arial', 24))
         self.prompt.setStyleSheet("color: #23405a; background: #f5f7fa; padding: 24px 0 24px 0; border-bottom-left-radius: 24px; border-bottom-right-radius: 24px;")
         main_layout.addWidget(self.prompt)
+        self._base_prompt_text = "Tap your ID or enter ID number"
+        self._prompt_override_active = False
         self.refresh_classroom_prompt()
         
         # Timer for updating header date and time
@@ -207,6 +209,11 @@ class NFCReaderGUI(QMainWindow):
         self.message_timer = QTimer()
         self.message_timer.setSingleShot(True)
         self.message_timer.timeout.connect(self.clear_prompt_message)
+
+        # Prompt status timer (active student status)
+        self.prompt_status_timer = QTimer()
+        self.prompt_status_timer.timeout.connect(self.update_prompt_status)
+        self.prompt_status_timer.start(1000)
         
         # Current student ID
         self.current_student_id = None
@@ -258,7 +265,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.20",  # Update this version number for each release
+            current_version="1.0.21",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -283,7 +290,8 @@ class NFCReaderGUI(QMainWindow):
             self.classroom_label 
             or (f"Classroom {self.classroom_id}" if self.classroom_id else "Classroom not configured")
         )
-        self.prompt.setText(f"{classroom_display}\nTap your ID or enter ID number")
+        self._base_prompt_text = f"{classroom_display}\nTap your ID or enter ID number"
+        self.prompt.setText(self._base_prompt_text)
 
     def save_classroom_settings(self, classroom_id, classroom_label, teacher_name):
         """Persist classroom settings and refresh UI."""
@@ -853,12 +861,36 @@ class NFCReaderGUI(QMainWindow):
 
     def show_prompt_message(self, message, duration=3000):
         """Show a message in the prompt area for a specified duration"""
+        self._prompt_override_active = True
         self.prompt.setText(message)
         self.message_timer.start(duration)
     
     def clear_prompt_message(self):
         """Clear the prompt message and restore default text"""
-        self.refresh_classroom_prompt()
+        self._prompt_override_active = False
+        self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
+
+    def update_prompt_status(self):
+        """If someone is out, show their name and elapsed time in the prompt."""
+        if self._prompt_override_active:
+            return
+
+        try:
+            outings = self.db.get_active_outings()
+        except Exception as exc:
+            print(f"[PROMPT] Unable to fetch active outings: {exc}")
+            outings = []
+
+        if outings:
+            active = outings[0]
+            elapsed = datetime.now() - active['start']
+            minutes = int(elapsed.total_seconds() // 60)
+            seconds = int(elapsed.total_seconds() % 60)
+            label = active.get('type', 'Out')
+            student_name = active.get('student_name', 'Student')
+            self.prompt.setText(f"{label}: {student_name}\nElapsed: {minutes:02d}:{seconds:02d}")
+        else:
+            self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
     
     def handle_card_linked(self, nfc_uid, student_name):
         """Handle successful card linking by automatically checking in the student"""

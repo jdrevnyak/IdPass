@@ -453,6 +453,65 @@ class StudentDatabase:
             print(f"Processed break for {student_id}: start={start_dt}, end={end_dt}, duration={duration}")  # Debug log
         
         return formatted_results
+
+    def get_active_outings(self):
+        """Return list of active outings (bathroom, nurse, water) with start times."""
+        cursor = self.conn.cursor()
+        outings = []
+
+        def parse_dt(value):
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value
+            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(value, fmt)
+                except (ValueError, TypeError):
+                    continue
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                return None
+
+        cursor.execute("""
+            SELECT s.name, b.break_start
+            FROM bathroom_breaks b
+            JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
+            WHERE b.break_end IS NULL AND (b.classroom_id = ? OR b.classroom_id IS NULL OR b.classroom_id = '')
+            ORDER BY b.break_start ASC
+        """, (self.classroom_id,))
+        for name, start in cursor.fetchall():
+            start_dt = parse_dt(start)
+            if start_dt:
+                outings.append({'type': 'Bathroom', 'student_name': name, 'start': start_dt})
+
+        cursor.execute("""
+            SELECT s.name, n.visit_start
+            FROM nurse_visits n
+            JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
+            WHERE n.visit_end IS NULL AND (n.classroom_id = ? OR n.classroom_id IS NULL OR n.classroom_id = '')
+            ORDER BY n.visit_start ASC
+        """, (self.classroom_id,))
+        for name, start in cursor.fetchall():
+            start_dt = parse_dt(start)
+            if start_dt:
+                outings.append({'type': 'Nurse', 'student_name': name, 'start': start_dt})
+
+        cursor.execute("""
+            SELECT s.name, w.visit_start
+            FROM water_visits w
+            JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
+            WHERE w.visit_end IS NULL AND (w.classroom_id = ? OR w.classroom_id IS NULL OR w.classroom_id = '')
+            ORDER BY w.visit_start ASC
+        """, (self.classroom_id,))
+        for name, start in cursor.fetchall():
+            start_dt = parse_dt(start)
+            if start_dt:
+                outings.append({'type': 'Water', 'student_name': name, 'start': start_dt})
+
+        outings.sort(key=lambda o: o['start'])
+        return outings
     
     def import_from_csv(self, csv_file):
         """Import students from a CSV file
