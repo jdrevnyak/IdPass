@@ -10,7 +10,7 @@ import serial
 import serial.tools.list_ports
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QLabel, QMessageBox, QPushButton)
+                            QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont
 
@@ -111,12 +111,17 @@ class NFCReaderGUI(QMainWindow):
         # Right: Buttons
         button_layout = QVBoxLayout()
         button_layout.setAlignment(Qt.AlignVCenter)
-        button_layout.setSpacing(32)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(24)
         self.break_start_button = QPushButton("Bathroom")
         self.nurse_button = QPushButton("Nurse")
         self.water_button = QPushButton("Water")
         for btn in [self.break_start_button, self.nurse_button, self.water_button]:
-            btn.setMinimumSize(340, 80)
+            btn.setMinimumWidth(320)
+            btn.setMaximumWidth(360)
+            btn.setMinimumHeight(72)
+            btn.setMaximumHeight(110)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             btn.setFont(QFont('Arial', 32, QFont.Bold))
             btn.setCursor(Qt.PointingHandCursor)
         self.break_start_button.setStyleSheet('''
@@ -253,7 +258,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.18",  # Update this version number for each release
+            current_version="1.0.19",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
