@@ -10,7 +10,7 @@ import subprocess
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QComboBox, QPushButton, QMessageBox, QLineEdit,
                             QFormLayout, QGroupBox, QGridLayout, QSizePolicy, QApplication)
-from PyQt5.QtCore import QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
 
 
@@ -105,6 +105,143 @@ class KeypadOverlay(QWidget):
         self.setVisible(False)
 
 
+class OnScreenKeyboard(QWidget):
+    """Generic on-screen keyboard overlay for text input fields."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(0,0,0,0.55);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setVisible(False)
+        self.setGeometry(parent.rect())
+        self.parent = parent
+        self.target_field = None
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setAlignment(Qt.AlignCenter)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QWidget()
+        container.setStyleSheet("background: white; border-radius: 24px;")
+        container.setFixedSize(640, 360)
+        vbox = QVBoxLayout(container)
+        vbox.setAlignment(Qt.AlignTop)
+        vbox.setContentsMargins(24, 24, 24, 24)
+        vbox.setSpacing(16)
+
+        self.title_label = QLabel("On-Screen Keyboard")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setFont(QFont('Arial', 20, QFont.Bold))
+        self.title_label.setStyleSheet("color: #23405a;")
+        vbox.addWidget(self.title_label)
+
+        self.preview_field = QLineEdit()
+        self.preview_field.setReadOnly(True)
+        self.preview_field.setAlignment(Qt.AlignCenter)
+        self.preview_field.setFont(QFont('Arial', 20, QFont.Bold))
+        self.preview_field.setStyleSheet(
+            "QLineEdit { background: #f5f7fa; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 10px; }"
+        )
+        vbox.addWidget(self.preview_field)
+
+        key_rows = [
+            list("1234567890"),
+            list("QWERTYUIOP"),
+            list("ASDFGHJKL"),
+            list("ZXCVBNM")
+        ]
+
+        for row_keys in key_rows:
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(8)
+            row_layout.setAlignment(Qt.AlignCenter)
+            for key in row_keys:
+                btn = QPushButton(key)
+                btn.setFixedSize(50, 50)
+                btn.setFont(QFont('Arial', 18, QFont.Bold))
+                btn.setStyleSheet(
+                    "QPushButton { background: #e8edf5; color: #23405a; border-radius: 10px; border: 2px solid #d0dae8; }"
+                    "QPushButton:hover { background: #d7e1f0; }"
+                    "QPushButton:pressed { background: #c4d2e6; }"
+                )
+                btn.clicked.connect(lambda _, char=key: self._append_text(char))
+                row_layout.addWidget(btn)
+            vbox.addLayout(row_layout)
+
+        control_layout = QHBoxLayout()
+        control_layout.setSpacing(12)
+
+        for label, handler, style in [
+            ("Space", self._append_space, "#2bb3a3"),
+            ("Backspace", self._backspace, "#e67e22"),
+            ("Clear", self._clear_text, "#c0392b"),
+            ("Done", self.hide, "#3498db"),
+        ]:
+            btn = QPushButton(label)
+            btn.setFont(QFont('Arial', 16, QFont.Bold))
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {style}; color: white; border-radius: 12px; padding: 12px 18px; }}"
+                f"QPushButton:hover {{ background: {self._darken_color(style, 0.85)}; }}"
+                f"QPushButton:pressed {{ background: {self._darken_color(style, 0.7)}; }}"
+            )
+            btn.clicked.connect(handler)
+            control_layout.addWidget(btn)
+
+        vbox.addLayout(control_layout)
+        main_layout.addWidget(container)
+
+    def _darken_color(self, hex_color, factor):
+        """Utility to darken a hex color."""
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) != 6:
+            return hex_color
+        r = max(0, min(255, int(int(hex_color[0:2], 16) * factor)))
+        g = max(0, min(255, int(int(hex_color[2:4], 16) * factor)))
+        b = max(0, min(255, int(int(hex_color[4:6], 16) * factor)))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def show_for(self, line_edit, label):
+        """Display the keyboard for the provided QLineEdit."""
+        self.target_field = line_edit
+        self.title_label.setText(f"Editing: {label}")
+        self._sync_preview()
+        self.setGeometry(self.parent.rect())
+        self.setVisible(True)
+        self.raise_()
+
+    def hideEvent(self, event):
+        self.setVisible(False)
+        self.target_field = None
+        super().hideEvent(event)
+
+    def _append_text(self, char):
+        if not self.target_field:
+            return
+        self.target_field.setText(self.target_field.text() + char)
+        self._sync_preview()
+
+    def _append_space(self):
+        self._append_text(" ")
+
+    def _backspace(self):
+        if not self.target_field:
+            return
+        current = self.target_field.text()
+        self.target_field.setText(current[:-1])
+        self._sync_preview()
+
+    def _clear_text(self):
+        if not self.target_field:
+            return
+        self.target_field.setText("")
+        self._sync_preview()
+
+    def _sync_preview(self):
+        if self.target_field:
+            self.preview_field.setText(self.target_field.text())
+        else:
+            self.preview_field.setText("")
 class SettingsOverlay(QWidget):
     """Overlay for application settings including ESP32 connection."""
     
@@ -335,6 +472,11 @@ class SettingsOverlay(QWidget):
         
         # Update active breaks status
         self.update_active_breaks_status()
+        self.keyboard = OnScreenKeyboard(self)
+        self._keyboard_fields = {}
+        self._register_keyboard_field(self.classroom_id_input, "Classroom ID")
+        self._register_keyboard_field(self.classroom_label_input, "Display Name")
+        self._register_keyboard_field(self.teacher_name_input, "Teacher")
         self.populate_classroom_fields()
 
     def refresh_ports(self):
@@ -390,6 +532,21 @@ class SettingsOverlay(QWidget):
 
     def show_add_student_dialog(self):
         self.parent.add_student_overlay.show_overlay()
+
+    def _register_keyboard_field(self, line_edit, label):
+        """Attach the on-screen keyboard handler to a line edit."""
+        if not hasattr(self, '_keyboard_fields'):
+            self._keyboard_fields = {}
+        self._keyboard_fields[line_edit] = label
+        line_edit.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        """Intercept focus/click events to show the on-screen keyboard."""
+        if hasattr(self, '_keyboard_fields') and obj in self._keyboard_fields:
+            if event.type() in (QEvent.MouseButtonPress, QEvent.FocusIn):
+                if hasattr(self, 'keyboard') and self.keyboard:
+                    self.keyboard.show_for(obj, self._keyboard_fields[obj])
+        return super().eventFilter(obj, event)
 
     def populate_classroom_fields(self):
         """Load classroom settings into the form fields."""
@@ -837,6 +994,11 @@ class SettingsOverlay(QWidget):
         self.update_sync_status()
         self.update_active_breaks_status()
         self.update_version_display()
+
+    def hideEvent(self, event):
+        if hasattr(self, 'keyboard') and self.keyboard:
+            self.keyboard.hide()
+        super().hideEvent(event)
 
     def mousePressEvent(self, event):
         # Dismiss if click outside the white box
