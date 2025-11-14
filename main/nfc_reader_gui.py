@@ -98,8 +98,8 @@ class NFCReaderGUI(QMainWindow):
         
         # Center layout for clock and buttons
         center_layout = QHBoxLayout()
-        center_layout.setContentsMargins(40, 40, 40, 40)
-        center_layout.setSpacing(60)
+        center_layout.setContentsMargins(20, 12, 20, 12)
+        center_layout.setSpacing(40)
         
         # Left: Analog clock
         clock_layout = QVBoxLayout()
@@ -112,17 +112,17 @@ class NFCReaderGUI(QMainWindow):
         button_layout = QVBoxLayout()
         button_layout.setAlignment(Qt.AlignVCenter)
         button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(24)
+        button_layout.setSpacing(18)
         self.break_start_button = QPushButton("Bathroom")
         self.nurse_button = QPushButton("Nurse")
         self.water_button = QPushButton("Water")
         for btn in [self.break_start_button, self.nurse_button, self.water_button]:
-            btn.setMinimumWidth(320)
-            btn.setMaximumWidth(360)
-            btn.setMinimumHeight(72)
-            btn.setMaximumHeight(110)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            btn.setFont(QFont('Arial', 32, QFont.Bold))
+            btn.setMinimumWidth(300)
+            btn.setMaximumWidth(340)
+            btn.setMinimumHeight(58)
+            btn.setMaximumHeight(86)
+            btn.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
+            btn.setFont(QFont('Arial', 28, QFont.Bold))
             btn.setCursor(Qt.PointingHandCursor)
         self.break_start_button.setStyleSheet('''
             QPushButton {
@@ -258,7 +258,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.19",  # Update this version number for each release
+            current_version="1.0.20",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
