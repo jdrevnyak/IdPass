@@ -360,6 +360,23 @@ db.collection('nurse_visits')
     document.getElementById('totalNurseVisits').textContent = todayVisits;
   });
 
+// Total water visits today
+db.collection('water_visits')
+  .onSnapshot((snapshot) => {
+    let todayVisits = 0;
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      if (data.visit_start) {
+        const visitDate = data.visit_start.substring(0, 10); // Extract YYYY-MM-DD
+        if (visitDate === today) {
+          todayVisits++;
+        }
+      }
+    });
+
+    document.getElementById('totalWaterVisits').textContent = todayVisits;
+  });
+
 // Recent activity
 function loadRecentActivity() {
   console.log('[DASHBOARD] Loading recent activity for date:', today);
@@ -413,33 +430,59 @@ function loadRecentActivity() {
             }
           });
 
-          // Sort by start time (newest first)
-          activities.sort((a, b) => new Date(b.start) - new Date(a.start));
-          console.log('[DASHBOARD] Recent activity - final activities:', activities.length, activities);
+          // Get water visits
+          db.collection('water_visits')
+            .get()
+            .then((waterSnapshot) => {
+              waterSnapshot.forEach((doc) => {
+                const data = doc.data();
+                if (data.visit_start) {
+                  const visitDate = data.visit_start.substring(0, 10); // Extract YYYY-MM-DD
+                  if (visitDate === today) {
+                    activities.push({
+                      name: data.student_name || 'Unknown',
+                      type: 'Water',
+                      start: data.visit_start,
+                      end: data.visit_end,
+                      duration: data.duration_minutes,
+                      status: data.visit_end ? 'Ended' : 'Active'
+                    });
+                  }
+                }
+              });
 
-          // Display activities
-          if (activities.length === 0) {
-            recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">No activity today</td></tr>';
-          } else {
-            recentActivityBody.innerHTML = activities.slice(0, 10).map(activity => {
-              console.log('[DASHBOARD] Rendering activity:', activity);
-              const endTime = activity.end ? formatTime(activity.end) : '-';
-              const duration = (activity.duration !== null && activity.duration !== undefined) ? activity.duration + ' min' : '-';
-              const statusBadge = activity.status === 'Active' ? 'badge-active' : 'badge-ended';
-              console.log('[DASHBOARD] Formatted - end:', endTime, 'duration:', duration, 'status:', activity.status);
-              
-              return `
-                <tr>
-                  <td>${activity.name}</td>
-                  <td>${activity.type}</td>
-                  <td>${formatTime(activity.start)}</td>
-                  <td>${endTime}</td>
-                  <td>${duration}</td>
-                  <td><span class="badge ${statusBadge}">${activity.status}</span></td>
-                </tr>
-              `;
-            }).join('');
-          }
+              // Sort by start time (newest first)
+              activities.sort((a, b) => new Date(b.start) - new Date(a.start));
+              console.log('[DASHBOARD] Recent activity - final activities:', activities.length, activities);
+
+              // Display activities
+              if (activities.length === 0) {
+                recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">No activity today</td></tr>';
+              } else {
+                recentActivityBody.innerHTML = activities.slice(0, 10).map(activity => {
+                  console.log('[DASHBOARD] Rendering activity:', activity);
+                  const endTime = activity.end ? formatTime(activity.end) : '-';
+                  const duration = (activity.duration !== null && activity.duration !== undefined) ? activity.duration + ' min' : '-';
+                  const statusBadge = activity.status === 'Active' ? 'badge-active' : 'badge-ended';
+                  console.log('[DASHBOARD] Formatted - end:', endTime, 'duration:', duration, 'status:', activity.status);
+                  
+                  return `
+                    <tr>
+                      <td>${activity.name}</td>
+                      <td>${activity.type}</td>
+                      <td>${formatTime(activity.start)}</td>
+                      <td>${endTime}</td>
+                      <td>${duration}</td>
+                      <td><span class="badge ${statusBadge}">${activity.status}</span></td>
+                    </tr>
+                  `;
+                }).join('');
+              }
+            })
+            .catch((error) => {
+              console.error('Error loading water visits:', error);
+              recentActivityBody.innerHTML = '<tr><td colspan="6" class="empty-state">Error loading activities</td></tr>';
+            });
         })
         .catch((error) => {
           console.error('Error loading nurse visits:', error);

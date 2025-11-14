@@ -1,14 +1,14 @@
-# Release Notes for v1.0.14
+# Release Notes for v1.0.16
 
-**Release Date:** 2025-11-06
+**Release Date:** 2025-11-14
 
 ## What's New
 
 ### 🐛 Bug Fixes
-- Bug Fixes
+- Various bug fixes and improvements
 
 ### ✨ New Features
-- Enhanced functionality
+- Set up individual devices. So each room has it's own ID
 
 ### 🔧 Improvements
 - Performance and stability improvements

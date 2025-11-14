@@ -50,10 +50,16 @@ class OnlineFirstDatabase:
     Only uses local SQLite when offline, and syncs back when online.
     """
     
-    def __init__(self, db_name="student_attendance.db", connectivity_check_interval=30):
+    def __init__(self, db_name="student_attendance.db", connectivity_check_interval=30, classroom_context=None):
         self.db_name = db_name
         self.connectivity_check_interval = connectivity_check_interval
         
+        # Classroom context (used for multi-device isolation)
+        self.classroom_context = classroom_context or {}
+        self.classroom_id = self.classroom_context.get('classroom_id', '')
+        self.classroom_label = self.classroom_context.get('classroom_label', '')
+        self.teacher_name = self.classroom_context.get('teacher_name', '')
+
         # Initialize Firebase (primary)
         self.firebase_db = None
         self.local_db = None
@@ -90,7 +96,7 @@ class OnlineFirstDatabase:
         
         def init_firebase():
             from firebase_db import FirebaseDatabase
-            return FirebaseDatabase()
+            return FirebaseDatabase(classroom_context=self.classroom_context)
         
         try:
             # Use timeout to prevent hanging
@@ -108,6 +114,7 @@ class OnlineFirstDatabase:
             
             # Check if there's existing offline data that needs syncing
             self._check_and_sync_offline_data_on_startup()
+            self.backfill_active_records()
         else:
             print("[ONLINE-FIRST] Falling back to offline mode...")
             self.is_online = False
@@ -118,7 +125,7 @@ class OnlineFirstDatabase:
         """Initialize local SQLite database (only when needed)"""
         if self.local_db is None:
             print("[ONLINE-FIRST] Initializing local SQLite database...")
-            self.local_db = StudentDatabase(self.db_name)
+            self.local_db = StudentDatabase(self.db_name, classroom_id=self.classroom_id)
             print("[ONLINE-FIRST] ✓ Local database initialized")
             
             # If we have Firebase connection, try to sync students to local for offline use
@@ -151,6 +158,31 @@ class OnlineFirstDatabase:
         self.check_thread = threading.Thread(target=self._connectivity_worker, daemon=True)
         self.check_thread.start()
         print(f"[ONLINE-FIRST] Connectivity monitor started (checking every {self.connectivity_check_interval}s)")
+
+    def update_classroom_context(self, classroom_context):
+        """Update classroom metadata used for tagging/filtering records."""
+        self.classroom_context = classroom_context or {}
+        self.classroom_id = self.classroom_context.get('classroom_id', '')
+        self.classroom_label = self.classroom_context.get('classroom_label', '')
+        self.teacher_name = self.classroom_context.get('teacher_name', '')
+
+        if self.firebase_db:
+            try:
+                self.firebase_db.update_classroom_context(self.classroom_context)
+                self.firebase_db.backfill_active_records()
+            except AttributeError:
+                pass
+
+        if self.local_db:
+            self.local_db.set_classroom_id(self.classroom_id)
+
+    def backfill_active_records(self):
+        """Backfill Firestore documents missing classroom metadata."""
+        if self.firebase_db:
+            try:
+                self.firebase_db.backfill_active_records()
+            except Exception as exc:
+                print(f"[ONLINE-FIRST] Backfill error: {exc}")
     
     def _connectivity_worker(self):
         """Background worker that monitors connectivity and handles transitions"""
@@ -195,7 +227,7 @@ class OnlineFirstDatabase:
             
             def init_firebase():
                 from firebase_db import FirebaseDatabase
-                return FirebaseDatabase()
+                return FirebaseDatabase(classroom_context=self.classroom_context)
             
             try:
                 self.firebase_db = run_with_timeout(init_firebase, 10)
@@ -210,6 +242,7 @@ class OnlineFirstDatabase:
                 return
         
         self.mode = "online"
+        self.backfill_active_records()
         
         # If we have local data, sync it to Firebase
         if self.local_db is not None:
@@ -271,7 +304,7 @@ class OnlineFirstDatabase:
                 # Initialize local DB to access the data
                 if self.local_db is None:
                     from student_db import StudentDatabase
-                    self.local_db = StudentDatabase(self.db_name)
+                    self.local_db = StudentDatabase(self.db_name, classroom_id=self.classroom_id)
                 
                 # Sync to Firebase
                 print("[ONLINE-FIRST] Syncing offline data to Firebase...")
@@ -300,13 +333,14 @@ class OnlineFirstDatabase:
         
         # Sync attendance
         cursor.execute("""
-            SELECT a.student_uid, s.name, a.date, a.check_in, a.check_out, a.scheduled_check_out
+            SELECT a.student_uid, s.name, a.date, a.check_in, a.check_out, a.scheduled_check_out, a.classroom_id
             FROM attendance a
             JOIN students s ON a.student_uid = s.id OR a.student_uid = s.student_id
         """)
         attendance_records = cursor.fetchall()
         
-        for student_uid, student_name, date, check_in, check_out, scheduled_check_out in attendance_records:
+        for student_uid, student_name, date, check_in, check_out, scheduled_check_out, record_classroom_id in attendance_records:
+            classroom_id = record_classroom_id or self.classroom_id
             # Convert timestamps to ISO format
             check_in_iso = self._to_iso(check_in) if check_in else ''
             check_out_iso = self._to_iso(check_out) if check_out else ''
@@ -318,23 +352,27 @@ class OnlineFirstDatabase:
                 'date': date,
                 'check_in': check_in_iso,
                 'check_out': check_out_iso,
-                'scheduled_check_out': scheduled_iso
+                'scheduled_check_out': scheduled_iso,
+                'classroom_id': classroom_id,
+                'classroom_label': self.classroom_label,
+                'teacher_name': self.teacher_name
             }
             
-            doc_id = f"{student_uid}_{date}"
+            doc_id = f"{student_uid}_{date}_{classroom_id or 'default'}"
             self.firebase_db.db.collection('attendance').document(doc_id).set(attendance_data)
         
         print(f"[ONLINE-FIRST] Synced {len(attendance_records)} attendance records")
         
         # Sync bathroom breaks
         cursor.execute("""
-            SELECT b.student_uid, s.name, b.break_start, b.break_end, b.duration_minutes
+            SELECT b.student_uid, s.name, b.break_start, b.break_end, b.duration_minutes, b.classroom_id
             FROM bathroom_breaks b
             JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
         """)
         breaks = cursor.fetchall()
         
-        for student_uid, student_name, break_start, break_end, duration in breaks:
+        for student_uid, student_name, break_start, break_end, duration, record_classroom_id in breaks:
+            classroom_id = record_classroom_id or self.classroom_id
             start_iso = self._to_iso(break_start) if break_start else ''
             end_iso = self._to_iso(break_end) if break_end else None
             
@@ -343,23 +381,27 @@ class OnlineFirstDatabase:
                 'student_name': student_name,
                 'break_start': start_iso,
                 'break_end': end_iso,
-                'duration_minutes': duration
+                'duration_minutes': duration,
+                'classroom_id': classroom_id,
+                'classroom_label': self.classroom_label,
+                'teacher_name': self.teacher_name
             }
             
-            doc_id = f"{student_uid}_{start_iso}"
+            doc_id = f"{student_uid}_{start_iso}_{classroom_id or 'default'}"
             self.firebase_db.db.collection('bathroom_breaks').document(doc_id).set(break_data)
         
         print(f"[ONLINE-FIRST] Synced {len(breaks)} bathroom breaks")
         
         # Sync nurse visits
         cursor.execute("""
-            SELECT n.student_uid, s.name, n.visit_start, n.visit_end, n.duration_minutes
+            SELECT n.student_uid, s.name, n.visit_start, n.visit_end, n.duration_minutes, n.classroom_id
             FROM nurse_visits n
             JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
         """)
         visits = cursor.fetchall()
         
-        for student_uid, student_name, visit_start, visit_end, duration in visits:
+        for student_uid, student_name, visit_start, visit_end, duration, record_classroom_id in visits:
+            classroom_id = record_classroom_id or self.classroom_id
             start_iso = self._to_iso(visit_start) if visit_start else ''
             end_iso = self._to_iso(visit_end) if visit_end else None
             
@@ -368,23 +410,27 @@ class OnlineFirstDatabase:
                 'student_name': student_name,
                 'visit_start': start_iso,
                 'visit_end': end_iso,
-                'duration_minutes': duration
+                'duration_minutes': duration,
+                'classroom_id': classroom_id,
+                'classroom_label': self.classroom_label,
+                'teacher_name': self.teacher_name
             }
             
-            doc_id = f"{student_uid}_{start_iso}"
+            doc_id = f"{student_uid}_{start_iso}_{classroom_id or 'default'}"
             self.firebase_db.db.collection('nurse_visits').document(doc_id).set(visit_data)
         
         print(f"[ONLINE-FIRST] Synced {len(visits)} nurse visits")
         
         # Sync water visits
         cursor.execute("""
-            SELECT w.student_uid, s.name, w.visit_start, w.visit_end, w.duration_minutes
+            SELECT w.student_uid, s.name, w.visit_start, w.visit_end, w.duration_minutes, w.classroom_id
             FROM water_visits w
             JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
         """)
         water_visits = cursor.fetchall()
         
-        for student_uid, student_name, visit_start, visit_end, duration in water_visits:
+        for student_uid, student_name, visit_start, visit_end, duration, record_classroom_id in water_visits:
+            classroom_id = record_classroom_id or self.classroom_id
             start_iso = self._to_iso(visit_start) if visit_start else ''
             end_iso = self._to_iso(visit_end) if visit_end else None
             
@@ -393,10 +439,13 @@ class OnlineFirstDatabase:
                 'student_name': student_name,
                 'visit_start': start_iso,
                 'visit_end': end_iso,
-                'duration_minutes': duration
+                'duration_minutes': duration,
+                'classroom_id': classroom_id,
+                'classroom_label': self.classroom_label,
+                'teacher_name': self.teacher_name
             }
             
-            doc_id = f"{student_uid}_{start_iso}"
+            doc_id = f"{student_uid}_{start_iso}_{classroom_id or 'default'}"
             self.firebase_db.db.collection('water_visits').document(doc_id).set(visit_data)
         
         print(f"[ONLINE-FIRST] Synced {len(water_visits)} water visits")
@@ -594,17 +643,26 @@ class OnlineFirstDatabase:
                 cursor = self.local_db.conn.cursor()
                 
                 # Check for active bathroom breaks
-                cursor.execute("SELECT id FROM bathroom_breaks WHERE break_end IS NULL LIMIT 1")
+                cursor.execute(
+                    "SELECT id FROM bathroom_breaks WHERE break_end IS NULL AND classroom_id = ? LIMIT 1",
+                    (self.classroom_id,)
+                )
                 if cursor.fetchone():
                     return True
                 
                 # Check for active nurse visits
-                cursor.execute("SELECT id FROM nurse_visits WHERE visit_end IS NULL LIMIT 1")
+                cursor.execute(
+                    "SELECT id FROM nurse_visits WHERE visit_end IS NULL AND classroom_id = ? LIMIT 1",
+                    (self.classroom_id,)
+                )
                 if cursor.fetchone():
                     return True
                 
                 # Check for active water visits
-                cursor.execute("SELECT id FROM water_visits WHERE visit_end IS NULL LIMIT 1")
+                cursor.execute(
+                    "SELECT id FROM water_visits WHERE visit_end IS NULL AND classroom_id = ? LIMIT 1",
+                    (self.classroom_id,)
+                )
                 if cursor.fetchone():
                     return True
                 

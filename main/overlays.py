@@ -226,6 +226,49 @@ class SettingsOverlay(QWidget):
         sync_layout.addWidget(self.current_version_label)
         
         vbox.addWidget(sync_group)
+
+        # Classroom Settings Section
+        classroom_group = QGroupBox("Classroom Settings")
+        classroom_group.setFont(QFont('Arial', 14, QFont.Bold))
+        classroom_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        classroom_layout = QVBoxLayout(classroom_group)
+
+        self.classroom_status_label = QLabel("")
+        self.classroom_status_label.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 6px;")
+        classroom_layout.addWidget(self.classroom_status_label)
+
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+
+        self.classroom_id_input = QLineEdit()
+        self.classroom_id_input.setPlaceholderText("e.g., 201, Library, Lab-A")
+        form_layout.addRow("Classroom ID*", self.classroom_id_input)
+
+        self.classroom_label_input = QLineEdit()
+        self.classroom_label_input.setPlaceholderText("Optional display name (e.g., Mrs. Smith Homeroom)")
+        form_layout.addRow("Display Name", self.classroom_label_input)
+
+        self.teacher_name_input = QLineEdit()
+        self.teacher_name_input.setPlaceholderText("Teacher name for this device")
+        form_layout.addRow("Teacher", self.teacher_name_input)
+
+        classroom_layout.addLayout(form_layout)
+
+        classroom_buttons = QHBoxLayout()
+        classroom_buttons.setSpacing(12)
+
+        save_classroom_btn = QPushButton("Save Classroom Info")
+        save_classroom_btn.setStyleSheet('QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 8px 16px; } QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }')
+        save_classroom_btn.clicked.connect(self.save_classroom_settings)
+        classroom_buttons.addWidget(save_classroom_btn)
+
+        reset_classroom_btn = QPushButton("Reset")
+        reset_classroom_btn.setStyleSheet('QPushButton { background: #e0e0e0; color: #23405a; border-radius: 8px; padding: 8px 16px; } QPushButton:hover { background: #cccccc; } QPushButton:pressed { background: #bbbbbb; }')
+        reset_classroom_btn.clicked.connect(self.populate_classroom_fields)
+        classroom_buttons.addWidget(reset_classroom_btn)
+
+        classroom_layout.addLayout(classroom_buttons)
+        vbox.addWidget(classroom_group)
         
         # Add New Student button
         add_btn = QPushButton('Add New Student')
@@ -292,6 +335,7 @@ class SettingsOverlay(QWidget):
         
         # Update active breaks status
         self.update_active_breaks_status()
+        self.populate_classroom_fields()
 
     def refresh_ports(self):
         """Refresh the list of available serial ports"""
@@ -346,6 +390,43 @@ class SettingsOverlay(QWidget):
 
     def show_add_student_dialog(self):
         self.parent.add_student_overlay.show_overlay()
+
+    def populate_classroom_fields(self):
+        """Load classroom settings into the form fields."""
+        config = getattr(self.parent, 'device_config', {}) or {}
+        classroom_id = config.get('classroom_id', '') or ''
+        classroom_label = config.get('classroom_label', '') or ''
+        teacher_name = config.get('teacher_name', '') or ''
+
+        self.classroom_id_input.setText(classroom_id)
+        self.classroom_label_input.setText(classroom_label)
+        self.teacher_name_input.setText(teacher_name)
+
+        if classroom_id:
+            display_label = classroom_label or f"Classroom {classroom_id}"
+            teacher_display = teacher_name or "Teacher not set"
+            status = f"Current: {display_label} • {teacher_display}"
+        else:
+            status = "Current: Not configured"
+        self.classroom_status_label.setText(status)
+
+    def save_classroom_settings(self):
+        """Persist classroom settings through the parent GUI."""
+        classroom_id = self.classroom_id_input.text().strip()
+        classroom_label = self.classroom_label_input.text().strip()
+        teacher_name = self.teacher_name_input.text().strip()
+
+        if not classroom_id:
+            QMessageBox.warning(self, "Missing Classroom ID", "Please enter a classroom ID or number for this device.")
+            self.classroom_id_input.setFocus()
+            return
+
+        try:
+            self.parent.save_classroom_settings(classroom_id, classroom_label, teacher_name)
+            self.populate_classroom_fields()
+            QMessageBox.information(self, "Saved", "Classroom settings updated successfully.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Error", f"Unable to save classroom settings:\n{exc}")
     
     def force_sync(self):
         """Force an immediate sync to Firebase Firestore"""

@@ -66,6 +66,14 @@
                 <div class="stat-value" id="avgNurseTime">-</div>
                 <div class="stat-label">Average Nurse Time (min)</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalWaterVisits">-</div>
+                <div class="stat-label">Total Water Visits</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgWaterTime">-</div>
+                <div class="stat-label">Average Water Time (min)</div>
+            </div>
         </div>
 
         <!-- Bathroom Breaks Breakdown -->
@@ -143,6 +151,47 @@
                     </tr>
                 </thead>
                 <tbody id="detailedNurseBody">
+                    <tr>
+                        <td colspan="5" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Water Visits Breakdown -->
+        <div class="card">
+            <div class="card-title">Water Visits by Student</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Total Visits</th>
+                        <th>Total Time (min)</th>
+                        <th>Average Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="waterBreakdownBody">
+                    <tr>
+                        <td colspan="4" class="empty-state">Select a date range and click Load Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Detailed Water Visits -->
+        <div class="card">
+            <div class="card-title">Detailed Water Visits</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Student</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="detailedWaterBody">
                     <tr>
                         <td colspan="5" class="empty-state">Select a date range and click Load Data</td>
                     </tr>

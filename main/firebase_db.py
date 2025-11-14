@@ -39,12 +39,78 @@ def get_period_for_time(dt):
 class FirebaseDatabase:
     """Database class that uses Firebase Firestore for all data storage operations."""
     
-    def __init__(self, credentials_file="firebase-service-account.json"):
+    def __init__(self, credentials_file="firebase-service-account.json", classroom_context=None):
         self.credentials_file = credentials_file
         self.db = None
         self.periods = PERIODS  # Default periods, will be updated from Firestore
+        self.classroom_context = classroom_context or {}
+        self.classroom_id = self.classroom_context.get('classroom_id', '')
+        self.classroom_label = self.classroom_context.get('classroom_label', '')
+        self.teacher_name = self.classroom_context.get('teacher_name', '')
         self.init_connection()
         self.load_periods()  # Load periods from Firestore on init
+
+    def update_classroom_context(self, classroom_context):
+        """Update classroom metadata for tagging/filtering."""
+        self.classroom_context = classroom_context or {}
+        self.classroom_id = self.classroom_context.get('classroom_id', '')
+        self.classroom_label = self.classroom_context.get('classroom_label', '')
+        self.teacher_name = self.classroom_context.get('teacher_name', '')
+
+    def _classroom_metadata(self) -> Dict[str, str]:
+        """Return the classroom metadata payload for Firestore documents."""
+        return {
+            'classroom_id': self.classroom_id or '',
+            'classroom_label': self.classroom_label or '',
+            'teacher_name': self.teacher_name or ''
+        }
+
+    def _classroom_id_value(self) -> str:
+        """Return the normalized classroom_id for filtering."""
+        return self.classroom_id or ''
+
+    def backfill_active_records(self):
+        """Add classroom metadata to today's/active documents that are missing it."""
+        if not self.classroom_id:
+            print("[FIREBASE] Classroom ID not configured - skipping backfill")
+            return
+
+        try:
+            metadata = self._classroom_metadata()
+            today = datetime.now().date().isoformat()
+            updated = {
+                'attendance': 0,
+                'bathroom_breaks': 0,
+                'nurse_visits': 0,
+                'water_visits': 0
+            }
+
+            attendance_ref = self.db.collection('attendance')
+            today_docs = attendance_ref.where('date', '==', today).get()
+            for doc in today_docs:
+                data = doc.to_dict()
+                if data.get('classroom_id'):
+                    continue
+                doc.reference.update(metadata)
+                updated['attendance'] += 1
+
+            def _backfill_active(collection_name, end_field):
+                collection_ref = self.db.collection(collection_name)
+                active_docs = collection_ref.where(end_field, '==', None).get()
+                for doc in active_docs:
+                    data = doc.to_dict()
+                    if data.get('classroom_id'):
+                        continue
+                    doc.reference.update(metadata)
+                    updated[collection_name] += 1
+
+            _backfill_active('bathroom_breaks', 'break_end')
+            _backfill_active('nurse_visits', 'visit_end')
+            _backfill_active('water_visits', 'visit_end')
+
+            print(f"[FIREBASE] Backfill complete: {updated}")
+        except Exception as exc:
+            print(f"[FIREBASE] Backfill error: {exc}")
     
     def init_connection(self):
         """Initialize connection to Firebase Firestore"""
@@ -222,7 +288,14 @@ class FirebaseDatabase:
             # Check if already checked in today
             today = datetime.now().date().isoformat()
             attendance_ref = self.db.collection('attendance')
-            query = attendance_ref.where('student_uid', '==', identifier).where('date', '==', today).limit(1).get()
+            query = (
+                attendance_ref
+                .where('student_uid', '==', identifier)
+                .where('date', '==', today)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             if len(list(query)) > 0:
                 return False, "Already checked in today"
@@ -251,6 +324,7 @@ class FirebaseDatabase:
                 'check_out': '',
                 'scheduled_check_out': scheduled_check_out or ''
             }
+            attendance_data.update(self._classroom_metadata())
             
             attendance_ref.add(attendance_data)
             
@@ -265,7 +339,14 @@ class FirebaseDatabase:
         try:
             today = datetime.now().date().isoformat()
             attendance_ref = self.db.collection('attendance')
-            query = attendance_ref.where('student_uid', '==', identifier).where('date', '==', today).limit(1).get()
+            query = (
+                attendance_ref
+                .where('student_uid', '==', identifier)
+                .where('date', '==', today)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             return len(list(query)) > 0
             
@@ -277,7 +358,14 @@ class FirebaseDatabase:
         """Check if student is currently on a bathroom break"""
         try:
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', None).limit(1).get()
+            query = (
+                breaks_ref
+                .where('student_uid', '==', identifier)
+                .where('break_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             return len(list(query)) > 0
             
@@ -312,7 +400,12 @@ class FirebaseDatabase:
             
             # Check if any OTHER student is currently on a break
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('break_end', '==', None).get()
+            query = (
+                breaks_ref
+                .where('break_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
             
             for doc in query:
                 data = doc.to_dict()
@@ -332,6 +425,7 @@ class FirebaseDatabase:
                 'break_end': None,
                 'duration_minutes': None
             }
+            break_data.update(self._classroom_metadata())
             
             breaks_ref.add(break_data)
             
@@ -345,7 +439,13 @@ class FirebaseDatabase:
         """End a bathroom break for a student"""
         try:
             breaks_ref = self.db.collection('bathroom_breaks')
-            query = breaks_ref.where('student_uid', '==', identifier).where('break_end', '==', None).get()
+            query = (
+                breaks_ref
+                .where('student_uid', '==', identifier)
+                .where('break_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
             
             for doc in query:
                 data = doc.to_dict()
@@ -373,7 +473,14 @@ class FirebaseDatabase:
         """Check if student is currently at the nurse"""
         try:
             nurse_ref = self.db.collection('nurse_visits')
-            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).limit(1).get()
+            query = (
+                nurse_ref
+                .where('student_uid', '==', identifier)
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             return len(list(query)) > 0
             
@@ -386,21 +493,39 @@ class FirebaseDatabase:
         try:
             # Check for active bathroom breaks
             breaks_ref = self.db.collection('bathroom_breaks')
-            breaks_query = breaks_ref.where('break_end', '==', None).limit(1).get()
+            breaks_query = (
+                breaks_ref
+                .where('break_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             if len(list(breaks_query)) > 0:
                 return True
             
             # Check for active nurse visits
             nurse_ref = self.db.collection('nurse_visits')
-            nurse_query = nurse_ref.where('visit_end', '==', None).limit(1).get()
+            nurse_query = (
+                nurse_ref
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             if len(list(nurse_query)) > 0:
                 return True
             
             # Check for active water visits
             water_ref = self.db.collection('water_visits')
-            water_query = water_ref.where('visit_end', '==', None).limit(1).get()
+            water_query = (
+                water_ref
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             if len(list(water_query)) > 0:
                 return True
@@ -500,6 +625,7 @@ class FirebaseDatabase:
                 'visit_end': None,
                 'duration_minutes': None
             }
+            visit_data.update(self._classroom_metadata())
             
             self.db.collection('nurse_visits').add(visit_data)
             
@@ -514,7 +640,13 @@ class FirebaseDatabase:
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
             nurse_ref = self.db.collection('nurse_visits')
-            query = nurse_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).get()
+            query = (
+                nurse_ref
+                .where('student_uid', '==', identifier)
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
             
             for doc in query:
                 data = doc.to_dict()
@@ -542,7 +674,14 @@ class FirebaseDatabase:
         """Check if student is currently at the water fountain"""
         try:
             water_ref = self.db.collection('water_visits')
-            query = water_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).limit(1).get()
+            query = (
+                water_ref
+                .where('student_uid', '==', identifier)
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .limit(1)
+                .get()
+            )
             
             return len(list(query)) > 0
             
@@ -587,6 +726,7 @@ class FirebaseDatabase:
                 'visit_end': None,
                 'duration_minutes': None
             }
+            visit_data.update(self._classroom_metadata())
             
             self.db.collection('water_visits').add(visit_data)
             
@@ -601,7 +741,13 @@ class FirebaseDatabase:
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
             water_ref = self.db.collection('water_visits')
-            query = water_ref.where('student_uid', '==', identifier).where('visit_end', '==', None).get()
+            query = (
+                water_ref
+                .where('student_uid', '==', identifier)
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
             
             for doc in query:
                 data = doc.to_dict()
@@ -642,7 +788,12 @@ class FirebaseDatabase:
             
             # Get today's attendance
             attendance_ref = self.db.collection('attendance')
-            query = attendance_ref.where('date', '==', today).get()
+            query = (
+                attendance_ref
+                .where('date', '==', today)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
             
             attendance_map = {}
             for doc in query:
@@ -675,7 +826,7 @@ class FirebaseDatabase:
             today = datetime.now().date().isoformat()
             
             breaks_ref = self.db.collection('bathroom_breaks')
-            all_breaks = breaks_ref.get()
+            all_breaks = breaks_ref.where('classroom_id', '==', self._classroom_id_value()).get()
             
             results = []
             for doc in all_breaks:
@@ -700,7 +851,7 @@ class FirebaseDatabase:
             today = datetime.now().date().isoformat()
             
             nurse_ref = self.db.collection('nurse_visits')
-            all_visits = nurse_ref.get()
+            all_visits = nurse_ref.where('classroom_id', '==', self._classroom_id_value()).get()
             
             results = []
             for doc in all_visits:
@@ -726,7 +877,13 @@ class FirebaseDatabase:
             today = now.date().isoformat()
 
             attendance_ref = self.db.collection('attendance')
-            query = attendance_ref.where('date', '==', today).where('check_out', '==', '').get()
+            query = (
+                attendance_ref
+                .where('date', '==', today)
+                .where('check_out', '==', '')
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
 
             for doc in query:
                 data = doc.to_dict()
@@ -771,7 +928,12 @@ class FirebaseDatabase:
 
             # Auto-end bathroom breaks
             breaks_ref = self.db.collection('bathroom_breaks')
-            breaks_query = breaks_ref.where('break_end', '==', None).get()
+            breaks_query = (
+                breaks_ref
+                .where('break_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
 
             for doc in breaks_query:
                 try:
@@ -800,7 +962,12 @@ class FirebaseDatabase:
 
             # Auto-end nurse visits
             nurse_ref = self.db.collection('nurse_visits')
-            nurse_query = nurse_ref.where('visit_end', '==', None).get()
+            nurse_query = (
+                nurse_ref
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
 
             for doc in nurse_query:
                 try:
@@ -829,7 +996,12 @@ class FirebaseDatabase:
 
             # Auto-end water visits
             water_ref = self.db.collection('water_visits')
-            water_query = water_ref.where('visit_end', '==', None).get()
+            water_query = (
+                water_ref
+                .where('visit_end', '==', None)
+                .where('classroom_id', '==', self._classroom_id_value())
+                .get()
+            )
 
             for doc in water_query:
                 try:

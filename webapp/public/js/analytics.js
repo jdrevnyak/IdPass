@@ -39,7 +39,8 @@ document.getElementById('endDate').value = getTodayDateLocal();
 
 let analyticsData = {
   breaks: [],
-  nurses: []
+  nurses: [],
+  water: []
 };
 
 // Load students for filter
@@ -122,14 +123,32 @@ async function loadAnalytics() {
       }
     });
 
+    // Load water visits
+    const waterSnapshot = await db.collection('water_visits').get();
+    analyticsData.water = [];
+    waterSnapshot.forEach((doc) => {
+      const data = doc.data();
+      if (data.visit_start) {
+        const visitDate = data.visit_start.split('T')[0];
+        if (visitDate >= startDate && visitDate <= endDate) {
+          // Filter by student if selected
+          if (!filterStudent || data.student_uid === filterStudent) {
+            analyticsData.water.push(data);
+          }
+        }
+      }
+    });
+
     // Calculate and display statistics
     const studentName = filterStudent ? document.getElementById('filterStudent').selectedOptions[0].textContent : 'All Students';
-    console.log('[ANALYTICS] Loaded data for:', studentName, 'Breaks:', analyticsData.breaks.length, 'Visits:', analyticsData.nurses.length);
+    console.log('[ANALYTICS] Loaded data for:', studentName, 'Breaks:', analyticsData.breaks.length, 'Nurse Visits:', analyticsData.nurses.length, 'Water Visits:', analyticsData.water.length);
     displayStatistics();
     displayBreaksBreakdown();
     displayNurseBreakdown();
+    displayWaterBreakdown();
     displayDetailedBreaks();
     displayDetailedNurseVisits();
+    displayDetailedWaterVisits();
 
   } catch (error) {
     console.error('Error loading analytics:', error);
@@ -151,10 +170,18 @@ function displayStatistics() {
     ? Math.round(completedNurse.reduce((sum, n) => sum + parseInt(n.duration_minutes || 0), 0) / completedNurse.length)
     : 0;
 
+  const completedWater = analyticsData.water.filter(w => w.duration_minutes);
+  const totalWater = analyticsData.water.length;
+  const avgWaterTime = completedWater.length > 0
+    ? Math.round(completedWater.reduce((sum, w) => sum + parseInt(w.duration_minutes || 0), 0) / completedWater.length)
+    : 0;
+
   document.getElementById('totalBreaks').textContent = totalBreaks;
   document.getElementById('avgBreakTime').textContent = avgBreakTime;
   document.getElementById('totalNurseVisits').textContent = totalNurse;
   document.getElementById('avgNurseTime').textContent = avgNurseTime;
+  document.getElementById('totalWaterVisits').textContent = totalWater;
+  document.getElementById('avgWaterTime').textContent = avgWaterTime;
 }
 
 // Display bathroom breaks breakdown by student
@@ -257,7 +284,7 @@ function exportData() {
   const endDate = document.getElementById('endDate').value;
   const filterStudent = document.getElementById('filterStudent').value;
 
-  if (analyticsData.breaks.length === 0 && analyticsData.nurses.length === 0) {
+  if (analyticsData.breaks.length === 0 && analyticsData.nurses.length === 0 && analyticsData.water.length === 0) {
     alert('No data to export. Please load analytics first.');
     return;
   }
@@ -271,6 +298,10 @@ function exportData() {
 
   analyticsData.nurses.forEach(visit => {
     csv += `Nurse Visit,${visit.student_name || 'Unknown'},${visit.visit_start},${visit.visit_end || 'Active'},${visit.duration_minutes || 'N/A'}\n`;
+  });
+
+  analyticsData.water.forEach(visit => {
+    csv += `Water Visit,${visit.student_name || 'Unknown'},${visit.visit_start},${visit.visit_end || 'Active'},${visit.duration_minutes || 'N/A'}\n`;
   });
 
   // Create filename with student name if filtered
@@ -358,6 +389,80 @@ function displayDetailedNurseVisits() {
   
   // Sort by start time (newest first)
   const sortedVisits = [...analyticsData.nurses].sort((a, b) => {
+    return new Date(b.visit_start) - new Date(a.visit_start);
+  });
+  
+  tbody.innerHTML = sortedVisits.map(visit => `
+    <tr>
+      <td>${formatDate(visit.visit_start)}</td>
+      <td>${visit.student_name || 'Unknown'}</td>
+      <td>${formatTime(visit.visit_start)}</td>
+      <td>${visit.visit_end ? formatTime(visit.visit_end) : 'Active'}</td>
+      <td>${visit.duration_minutes !== null && visit.duration_minutes !== undefined ? visit.duration_minutes : '-'}</td>
+    </tr>
+  `).join('');
+}
+
+// Display water visits breakdown by student
+function displayWaterBreakdown() {
+  const filterStudent = document.getElementById('filterStudent').value;
+  const breakdown = {};
+
+  analyticsData.water.forEach(visit => {
+    const name = visit.student_name || 'Unknown';
+    if (!breakdown[name]) {
+      breakdown[name] = {
+        count: 0,
+        totalTime: 0,
+        completedCount: 0
+      };
+    }
+    breakdown[name].count++;
+    if (visit.duration_minutes && visit.duration_minutes > 0) {
+      breakdown[name].totalTime += parseInt(visit.duration_minutes);
+      breakdown[name].completedCount++;
+    }
+  });
+
+  const tbody = document.getElementById('waterBreakdownBody');
+  const rows = Object.entries(breakdown).map(([name, data]) => ({
+    name,
+    count: data.count,
+    totalTime: data.totalTime,
+    avgTime: data.completedCount > 0 ? Math.round(data.totalTime / data.completedCount) : 0
+  }));
+
+  // Sort by count descending
+  rows.sort((a, b) => b.count - a.count);
+
+  if (rows.length === 0) {
+    const message = filterStudent ? 'No water visits for this student in this date range' : 'No water visits in this date range';
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">${message}</td></tr>`;
+  } else {
+    tbody.innerHTML = rows.map(row => `
+      <tr>
+        <td>${row.name}</td>
+        <td>${row.count}</td>
+        <td>${row.totalTime}</td>
+        <td>${row.avgTime}</td>
+      </tr>
+    `).join('');
+  }
+}
+
+// Display detailed water visits
+function displayDetailedWaterVisits() {
+  const tbody = document.getElementById('detailedWaterBody');
+  const filterStudent = document.getElementById('filterStudent').value;
+  
+  if (analyticsData.water.length === 0) {
+    const message = filterStudent ? 'No water visits for this student in this date range' : 'No water visits in this date range';
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">${message}</td></tr>`;
+    return;
+  }
+  
+  // Sort by start time (newest first)
+  const sortedVisits = [...analyticsData.water].sort((a, b) => {
     return new Date(b.visit_start) - new Date(a.visit_start);
   });
   

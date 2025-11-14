@@ -952,17 +952,26 @@ class HybridDatabase(StudentDatabase):
         cursor = self.conn.cursor()
         
         # Check for active bathroom breaks
-        cursor.execute("SELECT id FROM bathroom_breaks WHERE break_end IS NULL LIMIT 1")
+        cursor.execute(
+            "SELECT id FROM bathroom_breaks WHERE break_end IS NULL AND classroom_id = ? LIMIT 1",
+            (self.classroom_id,)
+        )
         if cursor.fetchone():
             return True
         
         # Check for active nurse visits
-        cursor.execute("SELECT id FROM nurse_visits WHERE visit_end IS NULL LIMIT 1")
+        cursor.execute(
+            "SELECT id FROM nurse_visits WHERE visit_end IS NULL AND classroom_id = ? LIMIT 1",
+            (self.classroom_id,)
+        )
         if cursor.fetchone():
             return True
         
         # Check for active water visits
-        cursor.execute("SELECT id FROM water_visits WHERE visit_end IS NULL LIMIT 1")
+        cursor.execute(
+            "SELECT id FROM water_visits WHERE visit_end IS NULL AND classroom_id = ? LIMIT 1",
+            (self.classroom_id,)
+        )
         if cursor.fetchone():
             return True
         
@@ -977,7 +986,8 @@ class HybridDatabase(StudentDatabase):
             FROM bathroom_breaks b
             JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
             WHERE b.break_end IS NULL
-        """)
+            AND b.classroom_id = ?
+        """, (self.classroom_id,))
 
         results = cursor.fetchall()
         return [(row[0], row[1], row[2]) for row in results]  # (nfc_uid, student_id, student_name)

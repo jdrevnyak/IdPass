@@ -25,8 +25,9 @@ def get_period_for_time(dt):
     return None, None
 
 class StudentDatabase:
-    def __init__(self, db_name="student_attendance.db"):
+    def __init__(self, db_name="student_attendance.db", classroom_id=""):
         self.db_name = db_name
+        self.classroom_id = classroom_id or ""
         self.conn = None
         self.init_database()
     
@@ -50,6 +51,7 @@ class StudentDatabase:
         CREATE TABLE IF NOT EXISTS attendance (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_uid TEXT,
+            classroom_id TEXT DEFAULT '',
             date DATE,
             check_in TIMESTAMP,
             check_out TIMESTAMP,
@@ -63,6 +65,7 @@ class StudentDatabase:
         CREATE TABLE IF NOT EXISTS bathroom_breaks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_uid TEXT,
+            classroom_id TEXT DEFAULT '',
             break_start TIMESTAMP,
             break_end TIMESTAMP,
             duration_minutes INTEGER,
@@ -75,6 +78,7 @@ class StudentDatabase:
         CREATE TABLE IF NOT EXISTS nurse_visits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_uid TEXT,
+            classroom_id TEXT DEFAULT '',
             visit_start TIMESTAMP,
             visit_end TIMESTAMP,
             duration_minutes INTEGER,
@@ -87,6 +91,7 @@ class StudentDatabase:
         CREATE TABLE IF NOT EXISTS water_visits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_uid TEXT,
+            classroom_id TEXT DEFAULT '',
             visit_start TIMESTAMP,
             visit_end TIMESTAMP,
             duration_minutes INTEGER,
@@ -95,6 +100,22 @@ class StudentDatabase:
         ''')
         
         self.conn.commit()
+        self._ensure_classroom_columns()
+
+    def _ensure_classroom_columns(self):
+        """Ensure legacy databases contain the classroom_id columns."""
+        cursor = self.conn.cursor()
+        tables = ["attendance", "bathroom_breaks", "nurse_visits", "water_visits"]
+        for table in tables:
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "classroom_id" not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN classroom_id TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def set_classroom_id(self, classroom_id: str):
+        """Update the active classroom id for future writes."""
+        self.classroom_id = classroom_id or ""
     
     def __del__(self):
         """Clean up database connection when object is destroyed"""
@@ -161,8 +182,8 @@ class StudentDatabase:
             return False, "Student not found in database"
         # Check if already checked in
         cursor.execute(
-            "SELECT id FROM attendance WHERE student_uid = ? AND date = ?",
-            (identifier, today)
+            "SELECT id FROM attendance WHERE student_uid = ? AND date = ? AND classroom_id = ?",
+            (identifier, today, self.classroom_id)
         )
         if cursor.fetchone():
             return False, "Already checked in today"
@@ -173,8 +194,8 @@ class StudentDatabase:
             scheduled_check_out = current_time.replace(hour=period_end.hour, minute=period_end.minute, second=0, microsecond=0)
         try:
             cursor.execute(
-                "INSERT INTO attendance (student_uid, date, check_in, scheduled_check_out) VALUES (?, ?, ?, ?)",
-                (identifier, today, current_time, scheduled_check_out if scheduled_check_out else None)
+                "INSERT INTO attendance (student_uid, classroom_id, date, check_in, scheduled_check_out) VALUES (?, ?, ?, ?, ?)",
+                (identifier, self.classroom_id, today, current_time, scheduled_check_out if scheduled_check_out else None)
             )
             self.conn.commit()
             return True, "Checked in successfully"
@@ -186,8 +207,8 @@ class StudentDatabase:
         cursor = self.conn.cursor()
         today = datetime.now().date()
         cursor.execute(
-            "SELECT id FROM attendance WHERE student_uid = ? AND date = ?",
-            (identifier, today)
+            "SELECT id FROM attendance WHERE student_uid = ? AND date = ? AND classroom_id = ?",
+            (identifier, today, self.classroom_id)
         )
         result = cursor.fetchone()
         return result is not None
@@ -200,7 +221,8 @@ class StudentDatabase:
             FROM bathroom_breaks 
             WHERE student_uid = ? 
             AND break_end IS NULL
-        """, (identifier,))
+            AND classroom_id = ?
+        """, (identifier, self.classroom_id))
         result = cursor.fetchone()
         return result is not None
     
@@ -279,7 +301,8 @@ class StudentDatabase:
                 FROM bathroom_breaks b
                 JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
                 WHERE b.break_end IS NULL
-            """)
+                AND b.classroom_id = ?
+            """, (self.classroom_id,))
             active_break = cursor.fetchone()
             if active_break:
                 return False, f"Another student ({active_break[0]}) is already on a break"
@@ -288,15 +311,16 @@ class StudentDatabase:
                 SELECT id FROM bathroom_breaks 
                 WHERE student_uid = ? 
                 AND break_end IS NULL
-            """, (identifier,))
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
             if cursor.fetchone():
                 return False, "Student is already on a break"
             # Start new break
             current_time = datetime.now()
             cursor.execute("""
-                INSERT INTO bathroom_breaks (student_uid, break_start)
-                VALUES (?, ?)
-            """, (identifier, current_time))
+                INSERT INTO bathroom_breaks (student_uid, classroom_id, break_start)
+                VALUES (?, ?, ?)
+            """, (identifier, self.classroom_id, current_time))
             self.conn.commit()
             return True, "Break started"
         except Exception as e:
@@ -314,8 +338,9 @@ class StudentDatabase:
                 SELECT id, break_start 
                 FROM bathroom_breaks
                 WHERE student_uid = ? 
-                AND break_end IS NULL
-            """, (identifier,))
+            AND break_end IS NULL
+            AND classroom_id = ?
+        """, (identifier, self.classroom_id))
             result = cursor.fetchone()
             print(f"[DB-DEBUG] Query result: {result}")
             
@@ -395,10 +420,11 @@ class StudentDatabase:
         cursor.execute("""
             SELECT s.student_id, b.break_start, b.break_end, b.duration_minutes
             FROM bathroom_breaks b
-            JOIN students s ON b.student_id = s.student_id
+            JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
             WHERE date(b.break_start) = ?
+            AND b.classroom_id = ?
             ORDER BY b.break_start DESC
-        """, (today.strftime("%Y-%m-%d"),))
+        """, (today.strftime("%Y-%m-%d"), self.classroom_id))
         
         results = cursor.fetchall()
         print(f"Found {len(results)} breaks for today")  # Debug log
@@ -515,7 +541,8 @@ class StudentDatabase:
             FROM nurse_visits 
             WHERE student_uid = ? 
             AND visit_end IS NULL
-        """, (identifier,))
+            AND classroom_id = ?
+        """, (identifier, self.classroom_id))
         result = cursor.fetchone()
         return result is not None
     
@@ -531,15 +558,16 @@ class StudentDatabase:
                 SELECT id FROM nurse_visits 
                 WHERE student_uid = ? 
                 AND visit_end IS NULL
-            """, (identifier,))
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
             if cursor.fetchone():
                 return False, "Student is already at the nurse"
             # Start new nurse visit
             current_time = datetime.now()
             cursor.execute("""
-                INSERT INTO nurse_visits (student_uid, visit_start)
-                VALUES (?, ?)
-            """, (identifier, current_time))
+                INSERT INTO nurse_visits (student_uid, classroom_id, visit_start)
+                VALUES (?, ?, ?)
+            """, (identifier, self.classroom_id, current_time))
             self.conn.commit()
             return True, "Nurse visit started"
         except Exception as e:
@@ -557,7 +585,8 @@ class StudentDatabase:
                 FROM nurse_visits
                 WHERE student_uid = ? 
                 AND visit_end IS NULL
-            """, (identifier,))
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
             result = cursor.fetchone()
             if not result:
                 return False, "Student is not at the nurse"
@@ -605,8 +634,9 @@ class StudentDatabase:
             FROM nurse_visits n
             JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
             WHERE date(n.visit_start) = ?
+            AND n.classroom_id = ?
             ORDER BY n.visit_start DESC
-        """, (today.strftime("%Y-%m-%d"),))
+        """, (today.strftime("%Y-%m-%d"), self.classroom_id))
         results = cursor.fetchall()
         formatted_results = []
         for student_id, start, end, duration in results:
@@ -630,7 +660,8 @@ class StudentDatabase:
             FROM water_visits 
             WHERE student_uid = ? 
             AND visit_end IS NULL
-        """, (identifier,))
+            AND classroom_id = ?
+        """, (identifier, self.classroom_id))
         result = cursor.fetchone()
         return result is not None
     
@@ -646,15 +677,16 @@ class StudentDatabase:
                 SELECT id FROM water_visits 
                 WHERE student_uid = ? 
                 AND visit_end IS NULL
-            """, (identifier,))
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
             if cursor.fetchone():
                 return False, "Student is already at the water fountain"
             # Start new water visit
             current_time = datetime.now()
             cursor.execute("""
-                INSERT INTO water_visits (student_uid, visit_start)
-                VALUES (?, ?)
-            """, (identifier, current_time))
+                INSERT INTO water_visits (student_uid, classroom_id, visit_start)
+                VALUES (?, ?, ?)
+            """, (identifier, self.classroom_id, current_time))
             self.conn.commit()
             return True, "Water visit started"
         except Exception as e:
@@ -672,7 +704,8 @@ class StudentDatabase:
                 FROM water_visits
                 WHERE student_uid = ? 
                 AND visit_end IS NULL
-            """, (identifier,))
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
             result = cursor.fetchone()
             if not result:
                 return False, "Student is not at the water fountain"
@@ -717,8 +750,8 @@ class StudentDatabase:
         now = datetime.now()
         today = now.date()
         cursor.execute(
-            "SELECT id, student_uid, scheduled_check_out FROM attendance WHERE date = ? AND check_out IS NULL AND scheduled_check_out IS NOT NULL",
-            (today,)
+            "SELECT id, student_uid, scheduled_check_out FROM attendance WHERE date = ? AND check_out IS NULL AND scheduled_check_out IS NOT NULL AND classroom_id = ?",
+            (today, self.classroom_id)
         )
         rows = cursor.fetchall()
         for row in rows:
