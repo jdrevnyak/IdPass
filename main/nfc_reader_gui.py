@@ -265,7 +265,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.21",  # Update this version number for each release
+            current_version="1.0.22",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )

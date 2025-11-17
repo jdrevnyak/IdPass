@@ -292,7 +292,25 @@ class StudentDatabase:
     def start_bathroom_break(self, identifier):
         """Start a bathroom break for a student by identifier (NFC UID or student_id)"""
         if not self.is_checked_in(identifier):
-            return False, "Student is not checked in"
+            # Auto-check-in the student first
+            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
+            
+            # Determine if identifier is NFC UID or student ID
+            student_info = self.get_student_by_student_id(identifier)
+            if student_info:
+                # It's a student ID
+                check_in_result = self.check_in(student_id=identifier)
+            else:
+                # Try as NFC UID
+                student_info = self.get_student_by_uid(identifier)
+                if student_info:
+                    check_in_result = self.check_in(nfc_uid=identifier)
+                else:
+                    return False, "Student not found"
+            
+            if not check_in_result[0]:
+                return False, f"Auto-check-in failed: {check_in_result[1]}"
+            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if any student is currently on a break
@@ -609,7 +627,20 @@ class StudentDatabase:
         """Start a nurse visit for a student by identifier (NFC UID or student_id)"""
         identifier = self.get_identifier(nfc_uid, student_id)
         if not self.is_checked_in(identifier):
-            return False, "Student is not checked in"
+            # Auto-check-in the student first
+            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
+            
+            # Use the provided parameters for check-in
+            if nfc_uid:
+                check_in_result = self.check_in(nfc_uid=nfc_uid)
+            elif student_id:
+                check_in_result = self.check_in(student_id=student_id)
+            else:
+                return False, "No student identifier provided"
+            
+            if not check_in_result[0]:
+                return False, f"Auto-check-in failed: {check_in_result[1]}"
+            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if this student has an active nurse visit
@@ -728,7 +759,20 @@ class StudentDatabase:
         """Start a water fountain visit for a student by identifier (NFC UID or student_id)"""
         identifier = self.get_identifier(nfc_uid, student_id)
         if not self.is_checked_in(identifier):
-            return False, "Student is not checked in"
+            # Auto-check-in the student first
+            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
+            
+            # Use the provided parameters for check-in
+            if nfc_uid:
+                check_in_result = self.check_in(nfc_uid=nfc_uid)
+            elif student_id:
+                check_in_result = self.check_in(student_id=student_id)
+            else:
+                return False, "No student identifier provided"
+            
+            if not check_in_result[0]:
+                return False, f"Auto-check-in failed: {check_in_result[1]}"
+            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if this student has an active water visit
