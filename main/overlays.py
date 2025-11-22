@@ -1170,6 +1170,7 @@ class BathroomOverlay(QWidget):
         
         text_layout.addStretch()
         
+        
         # Cancel button at bottom
         cancel_btn = QPushButton('Cancel')
         cancel_btn.setFont(QFont('Arial', 18, QFont.Bold))
@@ -1227,6 +1228,7 @@ class BathroomOverlay(QWidget):
     def process_card(self, nfc_uid):
         self.parent.process_bathroom_entry(nfc_uid=nfc_uid)
         self.hide()
+
 
 
 class NurseOverlay(QWidget):

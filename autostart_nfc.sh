@@ -32,7 +32,10 @@ fi
 
 
 
-# Add system site-packages to Python path for PyQt5
+# Activate virtual environment
+source /home/jdrevnyak/id/venv/bin/activate
+
+# Add system site-packages to Python path for PyQt5 (if needed, though venv is created with system-site-packages)
 export PYTHONPATH="/usr/lib/python3/dist-packages:$PYTHONPATH"
 
 echo "Python version: $(python --version)" >> $LOG_FILE
@@ -43,6 +46,7 @@ echo "PYTHONPATH: $PYTHONPATH" >> $LOG_FILE
 echo "Testing package imports..." >> $LOG_FILE
 python -c "import gspread; print('✓ gspread available')" >> $LOG_FILE 2>&1
 python -c "import PyQt5; print('✓ PyQt5 available')" >> $LOG_FILE 2>&1
+python -c "import qrcode; print('✓ qrcode available')" >> $LOG_FILE 2>&1
 
 # Check if display is available
 echo "Checking if display is available..." >> $LOG_FILE
@@ -58,4 +62,5 @@ else
 fi
 
 echo "Starting NFC Reader application via OTA system at: $(date)" >> $LOG_FILE
+# Use direct python execution (Picamera2 handles camera directly, no need for libcamerify)
 python ota-update.py >> $LOG_FILE 2>&1 
