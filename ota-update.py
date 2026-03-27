@@ -208,7 +208,6 @@ class OTAUpdateManager:
                 root_files_updated = 0
                 infrastructure_files = [
                     'ota-update.py',
-                    'updater.py',
                     'diagnose_ota.py',
                     'prepare_release.py',
                     'test_updater.py',

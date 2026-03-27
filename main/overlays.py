@@ -783,15 +783,16 @@ class SettingsOverlay(QWidget):
     def get_active_breaks_info(self):
         """Get information about active bathroom breaks, nurse visits, and water visits"""
         active_breaks = []
+        classroom_id = getattr(self.parent.db, 'classroom_id', '') or ''
         
         try:
             # Check if it's an online-first database in online mode (using Firebase)
             if hasattr(self.parent.db, 'mode') and self.parent.db.mode == "online" and hasattr(self.parent.db, 'firebase_db') and self.parent.db.firebase_db:
-                # Query Firebase for active breaks
+                fb = self.parent.db.firebase_db.db
                 try:
-                    # Get active bathroom breaks from Firebase
-                    breaks_ref = self.parent.db.firebase_db.db.collection('bathroom_breaks')
-                    breaks_query = breaks_ref.where('break_end', '==', None).get()
+                    breaks_query = fb.collection('bathroom_breaks') \
+                        .where('break_end', '==', None) \
+                        .where('classroom_id', '==', classroom_id).get()
                     
                     for doc in breaks_query:
                         data = doc.to_dict()
@@ -802,9 +803,9 @@ class SettingsOverlay(QWidget):
                             'uid': data.get('student_uid', '')
                         })
                     
-                    # Get active nurse visits from Firebase
-                    nurse_ref = self.parent.db.firebase_db.db.collection('nurse_visits')
-                    nurse_query = nurse_ref.where('visit_end', '==', None).get()
+                    nurse_query = fb.collection('nurse_visits') \
+                        .where('visit_end', '==', None) \
+                        .where('classroom_id', '==', classroom_id).get()
                     
                     for doc in nurse_query:
                         data = doc.to_dict()
@@ -815,9 +816,9 @@ class SettingsOverlay(QWidget):
                             'uid': data.get('student_uid', '')
                         })
                     
-                    # Get active water visits from Firebase
-                    water_ref = self.parent.db.firebase_db.db.collection('water_visits')
-                    water_query = water_ref.where('visit_end', '==', None).get()
+                    water_query = fb.collection('water_visits') \
+                        .where('visit_end', '==', None) \
+                        .where('classroom_id', '==', classroom_id).get()
                     
                     for doc in water_query:
                         data = doc.to_dict()
@@ -831,69 +832,64 @@ class SettingsOverlay(QWidget):
                     print(f"Error querying Firebase for active breaks: {e}")
             
             # Access the database connection properly for SQLite databases
-            # Check if it's a hybrid database (has conn attribute)
             elif hasattr(self.parent.db, 'conn') and self.parent.db.conn:
                 cursor = self.parent.db.conn.cursor()
                 
-                # Get active bathroom breaks
                 cursor.execute('''
                     SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
                     FROM bathroom_breaks b
                     JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
-                    WHERE b.break_end IS NULL
-                ''')
+                    WHERE b.break_end IS NULL AND b.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
                         'name': row[0],
                         'type': row[1],
                         'start_time': row[2],
-                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                        'uid': row[3]
                     })
                 
-                # Get active nurse visits
                 cursor.execute('''
                     SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
                     FROM nurse_visits n
                     JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
-                    WHERE n.visit_end IS NULL
-                ''')
+                    WHERE n.visit_end IS NULL AND n.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
                         'name': row[0],
                         'type': row[1],
                         'start_time': row[2],
-                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                        'uid': row[3]
                     })
                 
-                # Get active water visits
                 cursor.execute('''
                     SELECT s.name, 'water' as type, w.visit_start, w.student_uid
                     FROM water_visits w
                     JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
-                    WHERE w.visit_end IS NULL
-                ''')
+                    WHERE w.visit_end IS NULL AND w.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
                         'name': row[0],
                         'type': row[1],
                         'start_time': row[2],
-                        'uid': row[3]  # Use the actual student_uid for ending breaks
+                        'uid': row[3]
                     })
             
             # If it's an online-first database in offline mode, try to access local_db
             elif hasattr(self.parent.db, 'local_db') and self.parent.db.local_db and hasattr(self.parent.db.local_db, 'conn') and self.parent.db.local_db.conn:
                 cursor = self.parent.db.local_db.conn.cursor()
                 
-                # Get active bathroom breaks
                 cursor.execute('''
                     SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
                     FROM bathroom_breaks b
                     JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
-                    WHERE b.break_end IS NULL
-                ''')
+                    WHERE b.break_end IS NULL AND b.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
@@ -903,13 +899,12 @@ class SettingsOverlay(QWidget):
                         'uid': row[3]
                     })
                 
-                # Get active nurse visits
                 cursor.execute('''
                     SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
                     FROM nurse_visits n
                     JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
-                    WHERE n.visit_end IS NULL
-                ''')
+                    WHERE n.visit_end IS NULL AND n.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
@@ -919,13 +914,12 @@ class SettingsOverlay(QWidget):
                         'uid': row[3]
                     })
                 
-                # Get active water visits
                 cursor.execute('''
                     SELECT s.name, 'water' as type, w.visit_start, w.student_uid
                     FROM water_visits w
                     JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
-                    WHERE w.visit_end IS NULL
-                ''')
+                    WHERE w.visit_end IS NULL AND w.classroom_id = ?
+                ''', (classroom_id,))
                 
                 for row in cursor.fetchall():
                     active_breaks.append({
@@ -1139,9 +1133,17 @@ class SettingsOverlay(QWidget):
             self.hide()
 
 
-class BathroomOverlay(QWidget):
-    """Overlay for bathroom break functionality."""
-    
+class VisitOverlay(QWidget):
+    """Base overlay for visit types (bathroom, nurse, water).
+
+    Subclasses set TITLE, ACCENT_COLOR, and ENTRY_METHOD to customise
+    appearance and which parent handler is called on card tap / keypad OK.
+    """
+
+    TITLE = ""
+    ACCENT_COLOR = "#23405a"
+    ENTRY_METHOD = ""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -1150,27 +1152,27 @@ class BathroomOverlay(QWidget):
         self.setVisible(False)
         self.setGeometry(parent.rect())
         self.parent = parent
-        
+
+        accent = self.ACCENT_COLOR
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        
-        # Left side: Keypad (full height)
+
+        # Left side: Keypad
         keypad_container = QWidget()
         keypad_container.setStyleSheet("background: white; border-top-left-radius: 24px; border-bottom-left-radius: 24px;")
         keypad_container.setFixedWidth(400)
         keypad_layout = QVBoxLayout(keypad_container)
         keypad_layout.setContentsMargins(24, 24, 24, 24)
         keypad_layout.setSpacing(16)
-        
-        # Keypad title
+
         keypad_title = QLabel("Enter ID Number")
         keypad_title.setAlignment(Qt.AlignCenter)
         keypad_title.setFont(QFont('Arial', 20, QFont.Bold))
         keypad_title.setStyleSheet("color: #23405a; margin-bottom: 16px;")
         keypad_layout.addWidget(keypad_title)
-        
-        # Input field
+
         self.input = QLineEdit()
         self.input.setAlignment(Qt.AlignCenter)
         self.input.setFont(QFont('Arial', 24, QFont.Bold))
@@ -1179,8 +1181,7 @@ class BathroomOverlay(QWidget):
             "QLineEdit { background: #fff; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 12px; margin-bottom: 16px; }"
         )
         keypad_layout.addWidget(self.input)
-        
-        # Keypad grid
+
         grid = QGridLayout()
         grid.setSpacing(12)
         buttons = [
@@ -1208,9 +1209,9 @@ class BathroomOverlay(QWidget):
                 )
             elif text == 'OK':
                 btn.setStyleSheet(
-                    "QPushButton { background: #2bb3a3; color: white; border-radius: 16px; border: 2px solid #249e90; }"
-                    "QPushButton:hover { background: #249e90; }"
-                    "QPushButton:pressed { background: #1e857a; }"
+                    f"QPushButton {{ background: {accent}; color: white; border-radius: 16px; border: 2px solid {accent}; }}"
+                    f"QPushButton:hover {{ background: {accent}; }}"
+                    f"QPushButton:pressed {{ background: {accent}; }}"
                 )
             grid.addWidget(btn, row, col)
             if text.isdigit():
@@ -1219,40 +1220,36 @@ class BathroomOverlay(QWidget):
                 btn.clicked.connect(lambda: self.input.setText(''))
             elif text == 'OK':
                 btn.clicked.connect(self.ok_pressed)
-        
+
         keypad_layout.addLayout(grid)
         keypad_layout.addStretch()
-        
-        # Right side: Text and info (full height)
+
+        # Right side: Title, instructions, status, cancel
         text_container = QWidget()
         text_container.setStyleSheet("background: white; border-top-right-radius: 24px; border-bottom-right-radius: 24px;")
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(40, 40, 40, 40)
         text_layout.setSpacing(24)
-        
-        # Main title
-        main_title = QLabel("Bathroom Break")
+
+        main_title = QLabel(self.TITLE)
         main_title.setAlignment(Qt.AlignCenter)
         main_title.setFont(QFont('Arial', 24, QFont.Bold))
         main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
         text_layout.addWidget(main_title)
-        
-        # Instructions
+
         instructions = QLabel("Scan your ID card or enter your ID number using the keypad on the left.")
         instructions.setAlignment(Qt.AlignCenter)
         instructions.setWordWrap(True)
         instructions.setFont(QFont('Arial', 18))
         instructions.setStyleSheet("color: #23405a; line-height: 1.4; margin-bottom: 32px;")
         text_layout.addWidget(instructions)
-        
-        # Current status
+
         self.status_label = QLabel("Ready to scan")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(QFont('Arial', 20, QFont.Bold))
-        self.status_label.setStyleSheet("color: #2bb3a3; margin-bottom: 32px;")
+        self.status_label.setStyleSheet(f"color: {accent}; margin-bottom: 32px;")
         text_layout.addWidget(self.status_label)
-        
-        # Message area for errors/info
+
         self.message_label = QLabel("")
         self.message_label.setAlignment(Qt.AlignCenter)
         self.message_label.setWordWrap(True)
@@ -1260,220 +1257,22 @@ class BathroomOverlay(QWidget):
         self.message_label.setStyleSheet("color: #b71c1c; margin-bottom: 32px;")
         self.message_label.hide()
         text_layout.addWidget(self.message_label)
-        
+
         text_layout.addStretch()
-        
-        
-        # Cancel button at bottom
+
         cancel_btn = QPushButton('Cancel')
         cancel_btn.setFont(QFont('Arial', 18, QFont.Bold))
-        cancel_btn.setStyleSheet('''
-            QPushButton { 
-                background: #e0e0e0; 
-                color: #23405a; 
-                border-radius: 16px; 
-                padding: 16px 0; 
-                border: 2px solid #b0b0b0; 
-            } 
-            QPushButton:hover { 
-                background: #cccccc; 
-            } 
-            QPushButton:pressed { 
-                background: #bbbbbb; 
-            }
-        ''')
-        cancel_btn.clicked.connect(self.hide)
-        text_layout.addWidget(cancel_btn)
-        
-        # Add both containers to main layout
-        layout.addWidget(keypad_container)
-        layout.addWidget(text_container)
-        
-        # Message timer
-        self._message_timer = QTimer(self)
-        self._message_timer.setSingleShot(True)
-        self._message_timer.timeout.connect(self.clear_message)
-
-    def show_overlay(self):
-        self.input.setText("")
-        self.setGeometry(self.parent.rect())
-        self.setVisible(True)
-        self.raise_()
-        self.clear_message()
-        self.status_label.setText("Ready to scan")
-        self.status_label.setStyleSheet("color: #2bb3a3; margin-bottom: 32px;")
-
-    def show_message(self, message, duration=4000):
-        self.message_label.setText(message)
-        self.message_label.show()
-        self._message_timer.start(duration)
-
-    def clear_message(self):
-        self.message_label.hide()
-        self.message_label.setText("")
-
-    def ok_pressed(self):
-        student_id = self.input.text()
-        if student_id:
-            self.parent.process_bathroom_entry(student_id=student_id)
-            self.hide()
-
-    def process_card(self, nfc_uid):
-        self.parent.process_bathroom_entry(nfc_uid=nfc_uid)
-        self.hide()
-
-
-
-class NurseOverlay(QWidget):
-    """Overlay for nurse visit functionality."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("background: rgba(0,0,0,0.7);")
-        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
-        self.setVisible(False)
-        self.setGeometry(parent.rect())
-        self.parent = parent
-        
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Left side: Keypad (full height)
-        keypad_container = QWidget()
-        keypad_container.setStyleSheet("background: white; border-top-left-radius: 24px; border-bottom-left-radius: 24px;")
-        keypad_container.setFixedWidth(400)
-        keypad_layout = QVBoxLayout(keypad_container)
-        keypad_layout.setContentsMargins(24, 24, 24, 24)
-        keypad_layout.setSpacing(16)
-        
-        # Keypad title
-        keypad_title = QLabel("Enter ID Number")
-        keypad_title.setAlignment(Qt.AlignCenter)
-        keypad_title.setFont(QFont('Arial', 20, QFont.Bold))
-        keypad_title.setStyleSheet("color: #23405a; margin-bottom: 16px;")
-        keypad_layout.addWidget(keypad_title)
-        
-        # Input field
-        self.input = QLineEdit()
-        self.input.setAlignment(Qt.AlignCenter)
-        self.input.setFont(QFont('Arial', 24, QFont.Bold))
-        self.input.setReadOnly(True)
-        self.input.setStyleSheet(
-            "QLineEdit { background: #fff; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 12px; margin-bottom: 16px; }"
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 16px; padding: 16px 0; border: 2px solid #b0b0b0; } "
+            "QPushButton:hover { background: #cccccc; } "
+            "QPushButton:pressed { background: #bbbbbb; }"
         )
-        keypad_layout.addWidget(self.input)
-        
-        # Keypad grid
-        grid = QGridLayout()
-        grid.setSpacing(12)
-        buttons = [
-            ('1', 0, 0), ('2', 0, 1), ('3', 0, 2),
-            ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
-            ('7', 2, 0), ('8', 2, 1), ('9', 2, 2),
-            ('Clear', 3, 0), ('0', 3, 1), ('OK', 3, 2)
-        ]
-        for text, row, col in buttons:
-            btn = QPushButton(text)
-            btn.setFont(QFont('Arial', 18, QFont.Bold))
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            btn.setMinimumHeight(60)
-            if text.isdigit():
-                btn.setStyleSheet(
-                    "QPushButton { background: #f5f7fa; color: #23405a; border-radius: 16px; border: 2px solid #23405a; }"
-                    "QPushButton:hover { background: #e0e7ef; }"
-                    "QPushButton:pressed { background: #cfd8e3; }"
-                )
-            elif text == 'Clear':
-                btn.setStyleSheet(
-                    "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 16px; border: 2px solid #b0b0b0; }"
-                    "QPushButton:hover { background: #cccccc; }"
-                    "QPushButton:pressed { background: #bbbbbb; }"
-                )
-            elif text == 'OK':
-                btn.setStyleSheet(
-                    "QPushButton { background: #23405a; color: white; border-radius: 16px; border: 2px solid #1a2e3d; }"
-                    "QPushButton:hover { background: #1a2e3d; }"
-                    "QPushButton:pressed { background: #162534; }"
-                )
-            grid.addWidget(btn, row, col)
-            if text.isdigit():
-                btn.clicked.connect(lambda _, t=text: self.input.setText(self.input.text() + t))
-            elif text == 'Clear':
-                btn.clicked.connect(lambda: self.input.setText(''))
-            elif text == 'OK':
-                btn.clicked.connect(self.ok_pressed)
-        
-        keypad_layout.addLayout(grid)
-        keypad_layout.addStretch()
-        
-        # Right side: Text and info (full height)
-        text_container = QWidget()
-        text_container.setStyleSheet("background: white; border-top-right-radius: 24px; border-bottom-right-radius: 24px;")
-        text_layout = QVBoxLayout(text_container)
-        text_layout.setContentsMargins(40, 40, 40, 40)
-        text_layout.setSpacing(24)
-        
-        # Main title
-        main_title = QLabel("Nurse Visit")
-        main_title.setAlignment(Qt.AlignCenter)
-        main_title.setFont(QFont('Arial', 24, QFont.Bold))
-        main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-        text_layout.addWidget(main_title)
-        
-        # Instructions
-        instructions = QLabel("Scan your ID card or enter your ID number using the keypad on the left.")
-        instructions.setAlignment(Qt.AlignCenter)
-        instructions.setWordWrap(True)
-        instructions.setFont(QFont('Arial', 18))
-        instructions.setStyleSheet("color: #23405a; line-height: 1.4; margin-bottom: 32px;")
-        text_layout.addWidget(instructions)
-        
-        # Current status
-        self.status_label = QLabel("Ready to scan")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setFont(QFont('Arial', 20, QFont.Bold))
-        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-        text_layout.addWidget(self.status_label)
-        
-        # Message area for errors/info
-        self.message_label = QLabel("")
-        self.message_label.setAlignment(Qt.AlignCenter)
-        self.message_label.setWordWrap(True)
-        self.message_label.setFont(QFont('Arial', 16))
-        self.message_label.setStyleSheet("color: #b71c1c; margin-bottom: 32px;")
-        self.message_label.hide()
-        text_layout.addWidget(self.message_label)
-        
-        text_layout.addStretch()
-        
-        # Cancel button at bottom
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.setFont(QFont('Arial', 18, QFont.Bold))
-        cancel_btn.setStyleSheet('''
-            QPushButton { 
-                background: #e0e0e0; 
-                color: #23405a; 
-                border-radius: 16px; 
-                padding: 16px 0; 
-                border: 2px solid #b0b0b0; 
-            } 
-            QPushButton:hover { 
-                background: #cccccc; 
-            } 
-            QPushButton:pressed { 
-                background: #bbbbbb; 
-            }
-        ''')
         cancel_btn.clicked.connect(self.hide)
         text_layout.addWidget(cancel_btn)
-        
-        # Add both containers to main layout
+
         layout.addWidget(keypad_container)
         layout.addWidget(text_container)
-        
-        # Message timer
+
         self._message_timer = QTimer(self)
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(self.clear_message)
@@ -1485,7 +1284,7 @@ class NurseOverlay(QWidget):
         self.raise_()
         self.clear_message()
         self.status_label.setText("Ready to scan")
-        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
+        self.status_label.setStyleSheet(f"color: {self.ACCENT_COLOR}; margin-bottom: 32px;")
 
     def show_message(self, message, duration=4000):
         self.message_label.setText(message)
@@ -1496,198 +1295,36 @@ class NurseOverlay(QWidget):
         self.message_label.hide()
         self.message_label.setText("")
 
-    def ok_pressed(self):
-        student_id = self.input.text()
-        if student_id:
-            self.parent.process_nurse_entry(student_id=student_id)
-            self.hide()
-
-    def process_card(self, nfc_uid):
-        self.parent.process_nurse_entry(nfc_uid=nfc_uid)
-        self.hide()
-
-
-class WaterOverlay(QWidget):
-    """Overlay for water fountain visit functionality."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("background: rgba(0,0,0,0.7);")
-        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
-        self.setVisible(False)
-        self.setGeometry(parent.rect())
-        self.parent = parent
-        
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Left side: Keypad (full height)
-        keypad_container = QWidget()
-        keypad_container.setStyleSheet("background: white; border-top-left-radius: 24px; border-bottom-left-radius: 24px;")
-        keypad_container.setFixedWidth(400)
-        keypad_layout = QVBoxLayout(keypad_container)
-        keypad_layout.setContentsMargins(24, 24, 24, 24)
-        keypad_layout.setSpacing(16)
-        
-        # Keypad title
-        keypad_title = QLabel("Enter ID Number")
-        keypad_title.setAlignment(Qt.AlignCenter)
-        keypad_title.setFont(QFont('Arial', 20, QFont.Bold))
-        keypad_title.setStyleSheet("color: #23405a; margin-bottom: 16px;")
-        keypad_layout.addWidget(keypad_title)
-        
-        # Input field
-        self.input = QLineEdit()
-        self.input.setAlignment(Qt.AlignCenter)
-        self.input.setFont(QFont('Arial', 24, QFont.Bold))
-        self.input.setReadOnly(True)
-        self.input.setStyleSheet(
-            "QLineEdit { background: #fff; color: #23405a; border: 2px solid #23405a; border-radius: 12px; padding: 12px; margin-bottom: 16px; }"
-        )
-        keypad_layout.addWidget(self.input)
-        
-        # Keypad grid
-        grid = QGridLayout()
-        grid.setSpacing(12)
-        buttons = [
-            ('1', 0, 0), ('2', 0, 1), ('3', 0, 2),
-            ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
-            ('7', 2, 0), ('8', 2, 1), ('9', 2, 2),
-            ('Clear', 3, 0), ('0', 3, 1), ('OK', 3, 2)
-        ]
-        for text, row, col in buttons:
-            btn = QPushButton(text)
-            btn.setFont(QFont('Arial', 18, QFont.Bold))
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            btn.setMinimumHeight(60)
-            if text.isdigit():
-                btn.setStyleSheet(
-                    "QPushButton { background: #f5f7fa; color: #23405a; border-radius: 16px; border: 2px solid #23405a; }"
-                    "QPushButton:hover { background: #e0e7ef; }"
-                    "QPushButton:pressed { background: #cfd8e3; }"
-                )
-            elif text == 'Clear':
-                btn.setStyleSheet(
-                    "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 16px; border: 2px solid #b0b0b0; }"
-                    "QPushButton:hover { background: #cccccc; }"
-                    "QPushButton:pressed { background: #bbbbbb; }"
-                )
-            elif text == 'OK':
-                btn.setStyleSheet(
-                    "QPushButton { background: #3498db; color: white; border-radius: 16px; border: 2px solid #2980b9; }"
-                    "QPushButton:hover { background: #2980b9; }"
-                    "QPushButton:pressed { background: #21618c; }"
-                )
-            grid.addWidget(btn, row, col)
-            if text.isdigit():
-                btn.clicked.connect(lambda _, t=text: self.input.setText(self.input.text() + t))
-            elif text == 'Clear':
-                btn.clicked.connect(lambda: self.input.setText(''))
-            elif text == 'OK':
-                btn.clicked.connect(self.ok_pressed)
-        
-        keypad_layout.addLayout(grid)
-        keypad_layout.addStretch()
-        
-        # Right side: Text and info (full height)
-        text_container = QWidget()
-        text_container.setStyleSheet("background: white; border-top-right-radius: 24px; border-bottom-right-radius: 24px;")
-        text_layout = QVBoxLayout(text_container)
-        text_layout.setContentsMargins(40, 40, 40, 40)
-        text_layout.setSpacing(24)
-        
-        # Main title
-        main_title = QLabel("Water Fountain")
-        main_title.setAlignment(Qt.AlignCenter)
-        main_title.setFont(QFont('Arial', 24, QFont.Bold))
-        main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-        text_layout.addWidget(main_title)
-        
-        # Instructions
-        instructions = QLabel("Scan your ID card or enter your ID number using the keypad on the left.")
-        instructions.setAlignment(Qt.AlignCenter)
-        instructions.setWordWrap(True)
-        instructions.setFont(QFont('Arial', 18))
-        instructions.setStyleSheet("color: #23405a; line-height: 1.4; margin-bottom: 32px;")
-        text_layout.addWidget(instructions)
-        
-        # Current status
-        self.status_label = QLabel("Ready to scan")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setFont(QFont('Arial', 20, QFont.Bold))
-        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-        text_layout.addWidget(self.status_label)
-        
-        # Message area for errors/info
-        self.message_label = QLabel("")
-        self.message_label.setAlignment(Qt.AlignCenter)
-        self.message_label.setWordWrap(True)
-        self.message_label.setFont(QFont('Arial', 16))
-        self.message_label.setStyleSheet("color: #b71c1c; margin-bottom: 32px;")
-        self.message_label.hide()
-        text_layout.addWidget(self.message_label)
-        
-        text_layout.addStretch()
-        
-        # Cancel button at bottom
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.setFont(QFont('Arial', 18, QFont.Bold))
-        cancel_btn.setStyleSheet('''
-            QPushButton { 
-                background: #e0e0e0; 
-                color: #23405a; 
-                border-radius: 16px; 
-                padding: 16px 0; 
-                border: 2px solid #b0b0b0; 
-            } 
-            QPushButton:hover { 
-                background: #cccccc; 
-            } 
-            QPushButton:pressed { 
-                background: #bbbbbb; 
-            }
-        ''')
-        cancel_btn.clicked.connect(self.hide)
-        text_layout.addWidget(cancel_btn)
-        
-        # Add both containers to main layout
-        layout.addWidget(keypad_container)
-        layout.addWidget(text_container)
-        
-        # Message timer
-        self._message_timer = QTimer(self)
-        self._message_timer.setSingleShot(True)
-        self._message_timer.timeout.connect(self.clear_message)
-
-    def show_overlay(self):
-        self.input.setText("")
-        self.setGeometry(self.parent.rect())
-        self.setVisible(True)
-        self.raise_()
-        self.clear_message()
-        self.status_label.setText("Ready to scan")
-        self.status_label.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-
-    def show_message(self, message, duration=4000):
-        self.message_label.setText(message)
-        self.message_label.show()
-        self._message_timer.start(duration)
-
-    def clear_message(self):
-        self.message_label.hide()
-        self.message_label.setText("")
+    def _call_entry(self, **kwargs):
+        getattr(self.parent, self.ENTRY_METHOD)(**kwargs)
 
     def ok_pressed(self):
         student_id = self.input.text()
         if student_id:
-            self.parent.process_water_entry(student_id=student_id)
+            self._call_entry(student_id=student_id)
             self.hide()
 
     def process_card(self, nfc_uid):
-        self.parent.process_water_entry(nfc_uid=nfc_uid)
+        self._call_entry(nfc_uid=nfc_uid)
         self.hide()
+
+
+class BathroomOverlay(VisitOverlay):
+    TITLE = "Bathroom Break"
+    ACCENT_COLOR = "#2bb3a3"
+    ENTRY_METHOD = "process_bathroom_entry"
+
+
+class NurseOverlay(VisitOverlay):
+    TITLE = "Nurse Visit"
+    ACCENT_COLOR = "#23405a"
+    ENTRY_METHOD = "process_nurse_entry"
+
+
+class WaterOverlay(VisitOverlay):
+    TITLE = "Water Fountain"
+    ACCENT_COLOR = "#3498db"
+    ENTRY_METHOD = "process_water_entry"
 
 
 class AddStudentOverlay(QWidget):

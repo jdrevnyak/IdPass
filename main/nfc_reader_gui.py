@@ -6,9 +6,11 @@ components imported from other modules.
 """
 
 import sys
+import os
 import serial
 import serial.tools.list_ports
 from datetime import datetime, timedelta
+from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy)
 from PyQt5.QtCore import QTimer, Qt
@@ -32,7 +34,7 @@ from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay,
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
 from printer import ThermalPrinter
-from student_db import normalize_nfc_uid, normalize_student_id_key
+from student_db import normalize_nfc_uid, normalize_student_id_key, PERIODS
 
 
 class NFCReaderGUI(QMainWindow):
@@ -41,19 +43,13 @@ class NFCReaderGUI(QMainWindow):
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
-    # Default school day schedule (local time)
-    # Each tuple: (label, (start_hour, start_minute), (end_hour, end_minute))
-    # This will be overridden by periods loaded from Firebase
+    # Derived from the canonical PERIODS list in student_db.py (single source of truth).
+    # Overridden at runtime by periods loaded from Firebase when available.
     DEFAULT_SCHEDULE = [
-        ("Period 1", (7, 25), (8, 8)),
-        ("Period 2", (8, 12), (9, 1)),
-        ("Period 3", (9, 5), (9, 48)),
-        ("Period 4", (9, 52), (10, 35)),
-        ("Period 5", (10, 39), (11, 22)),
-        ("Period 6", (11, 26), (12, 9)),
-        ("Period 7", (12, 13), (12, 56)),
-        ("Period 8", (13, 0), (13, 43)),
-        ("Period 9", (13, 47), (14, 30)),
+        (f"Period {name}" if isinstance(name, int) else str(name),
+         (start.hour, start.minute),
+         (end.hour, end.minute))
+        for name, start, end in PERIODS
     ]
     
     def __init__(self):
@@ -267,9 +263,9 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.24",  # Update this version number for each release
-            repo_owner="jdrevnyak",  # Your GitHub username
-            repo_name="IdPass"  # Your repository name
+            current_version=self._read_version(),
+            repo_owner="jdrevnyak",
+            repo_name="IdPass"
         )
         # Automatic update checking is disabled in UpdateManager - users check manually via settings
 
@@ -277,6 +273,14 @@ class NFCReaderGUI(QMainWindow):
         self.printer = ThermalPrinter()
 
 
+
+    @staticmethod
+    def _read_version():
+        version_file = Path(__file__).parent / "version.txt"
+        try:
+            return version_file.read_text().strip()
+        except Exception:
+            return "0.0.0"
 
     def _set_classroom_attributes(self, config, refresh_prompt=True):
         """Apply classroom configuration to in-memory attributes."""
@@ -866,6 +870,34 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.prompt.setText(message)
 
+    def _close_serial(self):
+        """Safely close the current serial connection."""
+        if self.serial_connection:
+            try:
+                self.serial_connection.close()
+            except Exception:
+                pass
+            self.serial_connection = None
+
+    def _attempt_reconnect(self):
+        """Try to re-establish the serial connection after an error."""
+        self._close_serial()
+        self.connection_error_count += 1
+        backoff = min(self.connection_error_count * 5, 30)
+        print(f"[SERIAL] Will attempt reconnect in ~{backoff}s "
+              f"(error #{self.connection_error_count})")
+        QTimer.singleShot(backoff * 1000, self._reconnect)
+
+    def _reconnect(self):
+        """Callback fired after backoff; delegates to auto_connect_esp32."""
+        print("[SERIAL] Attempting auto-reconnect...")
+        self.auto_connect_esp32()
+        if self.serial_connection:
+            self.connection_error_count = 0
+            print("[SERIAL] Reconnected successfully")
+        else:
+            print("[SERIAL] Reconnect failed, will retry on next serial read")
+
     def read_serial(self):
         """Read data from serial connection and process NFC cards"""
         if not self.serial_connection:
@@ -875,6 +907,7 @@ class NFCReaderGUI(QMainWindow):
                 data = self.serial_connection.readline().decode('utf-8').strip()
                 print(f"[DEBUG] Received serial data: '{data}'")
                 if data:
+                    self.connection_error_count = 0
                     uid = self.parse_uid(data)
                     print(f"[DEBUG] Parsed UID: {uid}")
                     if uid:
@@ -915,9 +948,7 @@ class NFCReaderGUI(QMainWindow):
                                 self.show_prompt_message(message)
                         else:
                             print(f"[DEBUG] Unknown student with UID: {uid}")
-                            # Show unknown card message immediately, then check for linking options
                             self.show_prompt_message(f"Unknown Card (UID: {uid})\nChecking for students to link...")
-                            # Check if there are students without NFC UIDs
                             unassigned_students = self.db.get_students_without_nfc_uid()
                             if unassigned_students:
                                 print(f"[DEBUG] Found {len(unassigned_students)} students without NFC UIDs, showing selection overlay")
@@ -926,8 +957,8 @@ class NFCReaderGUI(QMainWindow):
                                 print(f"[DEBUG] No students without NFC UIDs found")
                                 self.show_prompt_message(f"Unknown Student (UID: {uid})\nNo unassigned students available")
         except Exception as e:
-            print(f"[DEBUG] Serial error: {e}")
-            QMessageBox.critical(self, "Serial Error", str(e))
+            print(f"[SERIAL] Error reading serial: {e}")
+            self._attempt_reconnect()
 
     def show_prompt_message(self, message, duration=3000):
         """Show a message in the prompt area for a specified duration"""

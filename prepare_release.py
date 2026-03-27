@@ -15,37 +15,23 @@ from datetime import datetime
 from pathlib import Path
 
 def get_current_version():
-    """Get current version from nfc_reader_gui.py"""
+    """Get current version from main/version.txt"""
+    version_file = Path(__file__).parent / "main" / "version.txt"
     try:
-        with open('main/nfc_reader_gui.py', 'r') as f:
-            content = f.read()
-            match = re.search(r'current_version="([^"]+)"', content)
-            if match:
-                return match.group(1)
+        return version_file.read_text().strip()
     except FileNotFoundError:
-        print("Error: main/nfc_reader_gui.py not found")
+        print("Error: main/version.txt not found")
     return "1.0.0"
 
 def update_version(new_version):
-    """Update version in nfc_reader_gui.py"""
+    """Update version in main/version.txt"""
+    version_file = Path(__file__).parent / "main" / "version.txt"
     try:
-        with open('main/nfc_reader_gui.py', 'r') as f:
-            content = f.read()
-        
-        # Update version
-        content = re.sub(
-            r'current_version="[^"]+"',
-            f'current_version="{new_version}"',
-            content
-        )
-        
-        with open('main/nfc_reader_gui.py', 'w') as f:
-            f.write(content)
-        
-        print(f"✅ Updated version to {new_version}")
+        version_file.write_text(new_version + "\n")
+        print(f"Updated version to {new_version}")
         return True
     except Exception as e:
-        print(f"❌ Error updating version: {e}")
+        print(f"Error updating version: {e}")
         return False
 
 def create_release_notes(version, changes):
@@ -129,7 +115,7 @@ def main():
         print(f"📄 Release notes created: RELEASE_NOTES_v{new_version}.md")
         
         print(f"\n📋 Next steps:")
-        print(f"1. Review the updated main/nfc_reader_gui.py")
+        print(f"1. Review main/version.txt")
         print(f"2. Review RELEASE_NOTES_v{new_version}.md")
         print(f"3. Commit changes: git add . && git commit -m 'Version {new_version}'")
         print(f"4. Push to GitHub: git push origin main")
