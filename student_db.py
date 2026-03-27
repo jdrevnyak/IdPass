@@ -4,6 +4,48 @@ import os
 import csv
 import json
 
+
+def normalize_nfc_uid(uid):
+    if uid is None:
+        return ""
+    s = str(uid).strip().upper().replace(":", "").replace("-", "").replace(" ", "")
+    if s.lower().startswith("0x"):
+        s = s[2:].upper()
+    return s
+
+
+def normalize_student_id_key(student_id):
+    if student_id is None:
+        return ""
+    return str(student_id).strip()
+
+
+def student_id_lookup_variants(student_id):
+    s = normalize_student_id_key(student_id)
+    if not s:
+        return []
+    variants = [s]
+    if s.isdigit() and len(s) > 1 and s.startswith("0"):
+        variants.append(str(int(s)))
+    return list(dict.fromkeys(variants))
+
+
+def student_id_firestore_values(student_id):
+    s = normalize_student_id_key(student_id)
+    if not s:
+        return []
+    vals = [s]
+    if s.isdigit():
+        try:
+            vals.append(int(s))
+        except ValueError:
+            pass
+    return list(dict.fromkeys(vals))
+
+
+# Canonical bell schedule for offline SQLite (check-in, auto-end breaks).
+# Online: FirebaseDatabase loads settings/periods from Firestore; if missing, falls back to
+# this list via firebase_db importing PERIODS from here. Keep Firestore in sync with this list.
 PERIODS = [
     (1, time(7, 25), time(8, 8)),
     (2, time(8, 12), time(8, 55)),
@@ -104,23 +146,34 @@ class StudentDatabase:
     
     def get_student_by_uid(self, nfc_uid):
         """Get student information by NFC UID"""
+        if not nfc_uid:
+            return None
+        raw = str(nfc_uid).strip()
+        norm = normalize_nfc_uid(nfc_uid)
+        keys = list(dict.fromkeys([k for k in (raw, norm) if k]))
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT student_id, name FROM students WHERE id = ?",
-            (nfc_uid,)
-        )
-        result = cursor.fetchone()
-        return result if result else None
+        for key in keys:
+            cursor.execute(
+                "SELECT student_id, name FROM students WHERE id = ?",
+                (key,),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result
+        return None
     
     def get_student_by_student_id(self, student_id):
         """Get student information by school student_id"""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT id, name FROM students WHERE student_id = ?",
-            (student_id,)
-        )
-        result = cursor.fetchone()
-        return result if result else None
+        for sid in student_id_lookup_variants(student_id):
+            cursor.execute(
+                "SELECT id, name FROM students WHERE student_id = ?",
+                (sid,),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result
+        return None
     
     def get_identifier(self, nfc_uid=None, student_id=None):
         """Return the identifier to use for attendance/breaks: NFC UID if present, else student_id."""
@@ -141,10 +194,9 @@ class StudentDatabase:
             return False, "No student identifier provided"
         # Check if student exists
         if nfc_uid:
-            cursor.execute("SELECT name FROM students WHERE id = ?", (nfc_uid,))
+            student = self.get_student_by_uid(nfc_uid)
         else:
-            cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
-        student = cursor.fetchone()
+            student = self.get_student_by_student_id(student_id)
         if not student:
             return False, "Student not found in database"
         # Check if already checked in
@@ -614,6 +666,83 @@ class StudentDatabase:
         except Exception as e:
             self.conn.rollback()
             return False, str(e)
+
+    def _parse_sqlite_datetime(self, val):
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val
+        if isinstance(val, str):
+            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(val, fmt)
+                except ValueError:
+                    continue
+            try:
+                return datetime.fromisoformat(val.replace(" ", "T"))
+            except Exception:
+                return None
+        return None
+
+    def _period_end_datetime_for_timestamp(self, dt: datetime):
+        t = dt.time()
+        for _name, start, end in PERIODS:
+            if start <= t <= end:
+                return datetime.combine(dt.date(), end)
+        return None
+
+    def get_students_on_break(self):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.id, s.student_id, s.name
+            FROM bathroom_breaks b
+            JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
+            WHERE b.break_end IS NULL
+            """
+        )
+        return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
+
+    def auto_end_breaks_at_period_end(self):
+        now = datetime.now()
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id, break_start FROM bathroom_breaks WHERE break_end IS NULL"
+            )
+            for break_id, break_start in cursor.fetchall():
+                start_dt = self._parse_sqlite_datetime(break_start)
+                if not start_dt:
+                    continue
+                pe = self._period_end_datetime_for_timestamp(start_dt)
+                if not pe or now < pe:
+                    continue
+                duration = int((pe - start_dt).total_seconds() / 60)
+                cursor.execute(
+                    "UPDATE bathroom_breaks SET break_end = ?, duration_minutes = ? WHERE id = ?",
+                    (pe, duration, break_id),
+                )
+
+            cursor.execute(
+                "SELECT id, visit_start FROM nurse_visits WHERE visit_end IS NULL"
+            )
+            for visit_id, visit_start in cursor.fetchall():
+                start_dt = self._parse_sqlite_datetime(visit_start)
+                if not start_dt:
+                    continue
+                pe = self._period_end_datetime_for_timestamp(start_dt)
+                if not pe or now < pe:
+                    continue
+                duration = int((pe - start_dt).total_seconds() / 60)
+                cursor.execute(
+                    "UPDATE nurse_visits SET visit_end = ?, duration_minutes = ? WHERE id = ?",
+                    (pe, duration, visit_id),
+                )
+
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[DB] auto_end_breaks_at_period_end: {e}")
     
     def get_today_nurse_visits(self):
         """Get all nurse visits for today (returns student_id, start, end, duration)"""
@@ -662,4 +791,5 @@ class StudentDatabase:
                     "UPDATE attendance SET check_out = ? WHERE id = ?",
                     (now, att_id)
                 )
-        self.conn.commit() 
+        self.conn.commit()
+        self.auto_end_breaks_at_period_end()

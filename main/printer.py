@@ -21,10 +21,24 @@ class ThermalPrinter:
         self.printer = None
         self._connect()
 
+    def _disconnect(self):
+        """Release USB resources so the device can be opened again after errors or unplug."""
+        if self.printer is None:
+            return
+        try:
+            close = getattr(self.printer, "close", None)
+            if callable(close):
+                close()
+        except Exception as e:
+            print(f"[PRINTER] Error while closing printer handle: {e}")
+        self.printer = None
+
     def _connect(self):
         if not PRINTER_LIB_AVAILABLE:
             return
-        
+
+        self._disconnect()
+
         try:
             # Attempt to find the printer
             # Explicitly set endpoints for POS58/0416:5011 printer
@@ -33,13 +47,26 @@ class ThermalPrinter:
             print(f"[PRINTER] Connected to printer {hex(self.vendor_id)}:{hex(self.product_id)}")
         except Exception as e:
             # Only print error if we really tried and failed, to avoid spamming logs if just not present
-            print(f"[PRINTER] Connection failed: {e}") 
+            print(f"[PRINTER] Connection failed: {e}")
             self.printer = None
+
+    def reconnect(self):
+        """Drop any existing USB session and open a fresh connection."""
+        self._connect()
+        return self.is_connected()
 
     def is_connected(self):
         return self.printer is not None
 
-    def print_pass(self, student_name, student_id, pass_type="HALL PASS", location=None, timestamp=None):
+    def print_pass(
+        self,
+        student_name,
+        student_id,
+        pass_type="HALL PASS",
+        location=None,
+        timestamp=None,
+        _allow_retry=True,
+    ):
         """
         Print a hall pass with QR code.
         """
@@ -110,7 +137,49 @@ class ThermalPrinter:
 
         except Exception as e:
             print(f"[PRINTER] Print error: {e}")
-            self.printer = None
+            self._disconnect()
+            if _allow_retry:
+                self._connect()
+                if self.is_connected():
+                    return self.print_pass(
+                        student_name,
+                        student_id,
+                        pass_type=pass_type,
+                        location=location,
+                        timestamp=timestamp,
+                        _allow_retry=False,
+                    )
+            return False
+
+    def test_print(self):
+        """
+        Reconnect and print a short test page (for diagnostics from Settings).
+        """
+        if not PRINTER_LIB_AVAILABLE:
+            print("[PRINTER] Test skipped: python-escpos not installed.")
+            return False
+
+        self.reconnect()
+        if not self.is_connected():
+            return False
+
+        ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+        try:
+            self.printer.set(align="center")
+            self.printer.text("\n")
+            self.printer.text("IdPass printer test\n")
+            self.printer.text(f"{ts}\n")
+            self.printer.text("--------------------------------\n")
+            for _ in range(4):
+                self.printer.control("LF")
+            try:
+                self.printer.cut()
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            print(f"[PRINTER] Test print error: {e}")
+            self._disconnect()
             return False
 
 if __name__ == "__main__":

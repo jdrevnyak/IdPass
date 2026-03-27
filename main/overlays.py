@@ -352,6 +352,24 @@ class SettingsOverlay(QWidget):
         force_sync_btn.setStyleSheet('QPushButton { background: #3498db; color: white; border-radius: 8px; padding: 6px 12px; } QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }')
         force_sync_btn.clicked.connect(self.force_sync)
         sync_layout.addWidget(force_sync_btn)
+
+        firebase_check_btn = QPushButton('Check Firebase Connection')
+        firebase_check_btn.setFont(QFont('Arial', 12))
+        firebase_check_btn.setStyleSheet(
+            'QPushButton { background: #1f8b83; color: white; border-radius: 8px; padding: 6px 12px; } '
+            'QPushButton:hover { background: #1a756f; } QPushButton:pressed { background: #15635e; }'
+        )
+        firebase_check_btn.clicked.connect(self.check_firebase_connection)
+        sync_layout.addWidget(firebase_check_btn)
+
+        firebase_reconnect_btn = QPushButton('Reconnect to Firebase')
+        firebase_reconnect_btn.setFont(QFont('Arial', 12))
+        firebase_reconnect_btn.setStyleSheet(
+            'QPushButton { background: #16a085; color: white; border-radius: 8px; padding: 6px 12px; } '
+            'QPushButton:hover { background: #138d75; } QPushButton:pressed { background: #117a65; }'
+        )
+        firebase_reconnect_btn.clicked.connect(self.reconnect_firebase)
+        sync_layout.addWidget(firebase_reconnect_btn)
         
         # Check for updates button
         check_updates_btn = QPushButton('Check for Updates')
@@ -480,6 +498,15 @@ class SettingsOverlay(QWidget):
         restart_btn.setStyleSheet('QPushButton { background: #f39c12; color: white; border-radius: 12px; padding: 8px 16px; } QPushButton:hover { background: #e67e22; } QPushButton:pressed { background: #d35400; }')
         restart_btn.clicked.connect(self.restart_application)
         app_control_layout.addWidget(restart_btn)
+
+        test_printer_btn = QPushButton('Test Printer')
+        test_printer_btn.setFont(QFont('Arial', 14, QFont.Bold))
+        test_printer_btn.setStyleSheet(
+            'QPushButton { background: #3498db; color: white; border-radius: 12px; padding: 8px 16px; } '
+            'QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }'
+        )
+        test_printer_btn.clicked.connect(self.run_printer_test)
+        app_control_layout.addWidget(test_printer_btn)
         
         # Quit button
         quit_btn = QPushButton('Quit App')
@@ -627,6 +654,44 @@ class SettingsOverlay(QWidget):
             QMessageBox.information(self, "Sync Complete", "Data has been synced to Firebase Firestore successfully!")
         except Exception as e:
             QMessageBox.critical(self, "Sync Error", f"Error during sync: {str(e)}")
+
+    def check_firebase_connection(self):
+        """Ping internet + Firestore (OnlineFirstDatabase)."""
+        db = self.parent.db
+        if not hasattr(db, 'check_firebase_connection'):
+            QMessageBox.information(
+                self, "Not available",
+                "This database mode does not support Firebase connection checks."
+            )
+            return
+        try:
+            ok, msg = db.check_firebase_connection()
+            self.update_sync_status()
+            if ok:
+                QMessageBox.information(self, "Firebase", msg)
+            else:
+                QMessageBox.warning(self, "Firebase", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Firebase", str(e))
+
+    def reconnect_firebase(self):
+        """(Re)initialize Firebase client when offline or connection is stale."""
+        db = self.parent.db
+        if not hasattr(db, 'reconnect_firebase'):
+            QMessageBox.information(
+                self, "Not available",
+                "This database mode does not support Firebase reconnect."
+            )
+            return
+        try:
+            ok, msg = db.reconnect_firebase()
+            self.update_sync_status()
+            if ok:
+                QMessageBox.information(self, "Firebase", msg)
+            else:
+                QMessageBox.warning(self, "Firebase", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Firebase", str(e))
     
     def check_for_updates(self):
         """Check for application updates"""
@@ -982,6 +1047,34 @@ class SettingsOverlay(QWidget):
             import traceback
             traceback.print_exc()
     
+    def run_printer_test(self):
+        """Send a short test print and show whether the thermal printer responded."""
+        try:
+            printer = getattr(self.parent, "printer", None)
+            if printer is None:
+                QMessageBox.warning(
+                    self,
+                    "Printer Test",
+                    "Printer is not available in this build.",
+                )
+                return
+            ok = printer.test_print()
+        except Exception as e:
+            QMessageBox.critical(self, "Printer Test", f"Error: {e}")
+            return
+        if ok:
+            QMessageBox.information(
+                self,
+                "Printer Test",
+                "Test page was sent. Check the printer for output.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Printer Test",
+                "Could not connect or print. Check the USB cable and power, then try again.",
+            )
+
     def restart_application(self):
         """Restart the application"""
         reply = QMessageBox.question(self, 'Restart Application', 

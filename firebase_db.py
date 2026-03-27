@@ -11,29 +11,12 @@ from datetime import datetime, time
 import os
 from typing import Optional, Tuple, List, Dict
 
-
-# School periods configuration
-PERIODS = [
-    (1, time(7, 25), time(8, 8)),
-    (2, time(8, 12), time(8, 55)),
-    ('HR', time(8, 55), time(9, 1)),
-    (3, time(9, 5), time(9, 48)),
-    (4, time(9, 52), time(10, 35)),
-    (5, time(10, 39), time(11, 22)),
-    (6, time(11, 26), time(12, 9)),
-    (7, time(12, 13), time(12, 56)),
-    (8, time(13, 0), time(13, 43)),
-    (9, time(13, 47), time(14, 30)),
-]
-
-
-def get_period_for_time(dt):
-    """Get the current period and end time for a given datetime"""
-    t = dt.time()
-    for period, start, end in PERIODS:
-        if start <= t <= end:
-            return period, end
-    return None, None
+from student_db import (
+    normalize_nfc_uid,
+    student_id_firestore_values,
+    normalize_student_id_key,
+    PERIODS,
+)
 
 
 class FirebaseDatabase:
@@ -108,7 +91,15 @@ class FirebaseDatabase:
             if start <= t <= end:
                 return period, end
         return None, None
-    
+
+    def _period_end_datetime_for_timestamp(self, dt: datetime) -> Optional[datetime]:
+        """End-of-period datetime for the school period whose window contains dt."""
+        t = dt.time()
+        for _name, start, end in self.periods:
+            if start <= t <= end:
+                return datetime.combine(dt.date(), end)
+        return None
+
     def add_student(self, nfc_uid: str, student_id: str, name: str) -> bool:
         """Add a new student to the Firestore database"""
         try:
@@ -144,78 +135,128 @@ class FirebaseDatabase:
             print(f"[FIREBASE] Error adding student: {e}")
             return False
     
-    def get_student_by_uid(self, nfc_uid: str) -> Optional[Tuple[str, str]]:
-        """Get student information by NFC UID"""
-        try:
-            doc = self.db.collection('students').document(nfc_uid).get()
-            if doc.exists:
-                data = doc.to_dict()
-                return (data['student_id'], data['name'])
+    def _student_row_from_doc(self, doc) -> Optional[Tuple[str, str]]:
+        data = doc.to_dict() or {}
+        name = data.get('name')
+        if name is None:
             return None
-            
+        sid = data.get('student_id')
+        sid_str = "" if sid is None else str(sid).strip()
+        return (sid_str, str(name))
+
+    def get_student_by_uid(self, nfc_uid: str) -> Optional[Tuple[str, str]]:
+        """Get student by document ID or nfc_uid field."""
+        raw = (nfc_uid or "").strip()
+        if not raw:
+            return None
+        norm = normalize_nfc_uid(nfc_uid)
+        variants = list(dict.fromkeys([v for v in (raw, norm) if v]))
+        try:
+            students_ref = self.db.collection('students')
+            for uid in variants:
+                doc = students_ref.document(uid).get()
+                if doc.exists:
+                    row = self._student_row_from_doc(doc)
+                    if row:
+                        return row
+            for uid in variants:
+                query = students_ref.where("nfc_uid", "==", uid).limit(1).get()
+                for doc in query:
+                    row = self._student_row_from_doc(doc)
+                    if row:
+                        return row
+            return None
         except Exception as e:
             print(f"[FIREBASE] Error getting student by UID: {e}")
             return None
-    
+
     def get_student_by_student_id(self, student_id: str) -> Optional[Tuple[str, str]]:
-        """Get student information by school student_id"""
+        """Get student information by school student_id (string or int in Firestore)."""
         try:
-            students_ref = self.db.collection('students')
-            query = students_ref.where('student_id', '==', str(student_id)).limit(1).get()
-            
-            for doc in query:
-                data = doc.to_dict()
-                return (data.get('nfc_uid', ''), data['name'])
-            
+            students_ref = self.db.collection("students")
+            sid_key = normalize_student_id_key(student_id)
+            for val in student_id_firestore_values(student_id):
+                query = students_ref.where("student_id", "==", val).limit(1).get()
+                for doc in query:
+                    row = self._student_row_from_doc(doc)
+                    if row:
+                        nfc = doc.to_dict().get("nfc_uid", "") or ""
+                        return (str(nfc).strip(), row[1])
+            if sid_key:
+                doc = students_ref.document(sid_key).get()
+                if doc.exists:
+                    row = self._student_row_from_doc(doc)
+                    if row:
+                        nfc = doc.to_dict().get("nfc_uid", "") or ""
+                        return (str(nfc).strip(), row[1])
             return None
-            
         except Exception as e:
             print(f"[FIREBASE] Error getting student by ID: {e}")
             return None
     
     def get_identifier(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Optional[str]:
-        """Return the identifier to use: NFC UID if present, else student_id"""
+        """Return the identifier to use: NFC UID if present, else student_id."""
+        if nfc_uid is not None:
+            nu = normalize_nfc_uid(nfc_uid)
+            nfc_uid = nu if nu else None
+        if student_id is not None:
+            student_id = normalize_student_id_key(student_id) or None
         if nfc_uid:
             return nfc_uid
-        elif student_id:
+        if student_id:
             return student_id
-        else:
-            return None
+        return None
     
     def get_student_name(self, identifier: str) -> str:
         """Get student name by identifier (NFC UID or Student ID)"""
-        try:
-            # Try by NFC UID first
-            doc = self.db.collection('students').document(identifier).get()
-            if doc.exists:
-                return doc.to_dict()['name']
-            
-            # Try by student_id
-            students_ref = self.db.collection('students')
-            query = students_ref.where('student_id', '==', str(identifier)).limit(1).get()
-            
-            for doc in query:
-                return doc.to_dict()['name']
-            
+        if not identifier:
             return "Unknown Student"
-            
+        try:
+            info = self.get_student_by_uid(identifier)
+            if info:
+                return info[1]
+            info = self.get_student_by_student_id(identifier)
+            if info:
+                return info[1]
+            return "Unknown Student"
         except Exception as e:
             print(f"[FIREBASE] Error getting student name: {e}")
             return "Unknown Student"
     
+    def _resolve_auto_check_in(self, identifier: str) -> Tuple[bool, str]:
+        """Choose NFC vs school-ID check-in from DB lookups (not string length)."""
+        if not identifier:
+            return False, "No student identifier provided"
+        if identifier.startswith("TEST"):
+            return self.check_in(nfc_uid=identifier)
+        norm_sid = normalize_student_id_key(identifier)
+        if norm_sid and self.get_student_by_student_id(norm_sid):
+            return self.check_in(student_id=norm_sid)
+        if self.get_student_by_uid(identifier):
+            return self.check_in(nfc_uid=identifier)
+        return False, "Student not found for auto-check-in"
+
     def check_in(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
         """Record student check-in"""
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
             if not identifier:
                 return False, "No student identifier provided"
-            
-            # Check if student exists
-            if nfc_uid:
-                student_info = self.get_student_by_uid(nfc_uid)
-            else:
-                student_info = self.get_student_by_student_id(student_id)
-            
+
+            student_info = None
+            if nfc_uid is not None:
+                nu = normalize_nfc_uid(nfc_uid)
+                if nu:
+                    student_info = self.get_student_by_uid(nu)
+                elif student_id is not None:
+                    student_info = self.get_student_by_student_id(
+                        normalize_student_id_key(student_id)
+                    )
+            elif student_id is not None:
+                student_info = self.get_student_by_student_id(
+                    normalize_student_id_key(student_id)
+                )
+
             if not student_info:
                 return False, "Student not found in database"
             
@@ -291,11 +332,7 @@ class FirebaseDatabase:
             if not self.is_checked_in(identifier):
                 # Auto-check-in the student first
                 print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
-                if identifier.startswith('TEST') or len(str(identifier)) > 10:
-                    success, message = self.check_in(nfc_uid=identifier)
-                else:
-                    success, message = self.check_in(student_id=identifier)
-                
+                success, message = self._resolve_auto_check_in(identifier)
                 if not success:
                     return False, f"Auto-check-in failed: {message}"
                 print(f"[FIREBASE] Auto-check-in successful: {message}")
@@ -429,9 +466,16 @@ class FirebaseDatabase:
         """Link an NFC card UID to a student"""
         try:
             students_ref = self.db.collection('students')
-            query = students_ref.where('student_id', '==', str(student_id)).limit(1).get()
-            
-            for doc in query:
+            query_docs = []
+            for val in student_id_firestore_values(student_id):
+                query_docs = list(students_ref.where("student_id", "==", val).limit(1).get())
+                if query_docs:
+                    break
+
+            uid_doc = normalize_nfc_uid(nfc_uid)
+            sid_store = normalize_student_id_key(student_id)
+
+            for doc in query_docs:
                 data = doc.to_dict()
                 student_name = data['name']
                 
@@ -440,14 +484,14 @@ class FirebaseDatabase:
                 
                 # Create new document with NFC UID as ID
                 new_data = {
-                    'nfc_uid': nfc_uid,
-                    'student_id': student_id,
+                    'nfc_uid': uid_doc,
+                    'student_id': sid_store,
                     'name': student_name,
                     'created_at': data.get('created_at', firestore.SERVER_TIMESTAMP)
                 }
-                students_ref.document(nfc_uid).set(new_data)
+                students_ref.document(uid_doc).set(new_data)
                 
-                print(f"[FIREBASE] Linked NFC UID {nfc_uid} to student {student_name} (ID: {student_id})")
+                print(f"[FIREBASE] Linked NFC UID {uid_doc} to student {student_name} (ID: {sid_store})")
                 return True, f"Card linked to {student_name}"
             
             return False, "Student not found"
@@ -463,11 +507,7 @@ class FirebaseDatabase:
             if not self.is_checked_in(identifier):
                 # Auto-check-in the student first
                 print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
-                if identifier.startswith('TEST') or len(str(identifier)) > 10:
-                    success, message = self.check_in(nfc_uid=identifier)
-                else:
-                    success, message = self.check_in(student_id=identifier)
-                
+                success, message = self._resolve_auto_check_in(identifier)
                 if not success:
                     return False, f"Auto-check-in failed: {message}"
                 print(f"[FIREBASE] Auto-check-in successful: {message}")
@@ -599,6 +639,22 @@ class FirebaseDatabase:
         except Exception as e:
             print(f"[FIREBASE] Error getting today's breaks: {e}")
             return []
+
+    def get_students_on_break(self) -> List[Tuple]:
+        """Active bathroom breaks: (student_uid, student_uid, name)."""
+        try:
+            breaks_ref = self.db.collection("bathroom_breaks")
+            breaks_query = breaks_ref.where("break_end", "==", None).get()
+            results = []
+            for doc in breaks_query:
+                data = doc.to_dict()
+                uid = data.get("student_uid", "") or ""
+                name = data.get("student_name", "Unknown")
+                results.append((uid, uid, name))
+            return results
+        except Exception as e:
+            print(f"[FIREBASE] Error get_students_on_break: {e}")
+            return []
     
     def get_today_nurse_visits(self) -> List[Tuple]:
         """Get all nurse visits for today"""
@@ -654,82 +710,61 @@ class FirebaseDatabase:
         except Exception as e:
             print(f"[FIREBASE] Error in auto-checkout: {e}")
 
+    def auto_end_breaks_at_period_end(self):
+        self._auto_end_breaks_and_visits_at_period_end()
+
     def _auto_end_breaks_and_visits_at_period_end(self):
-        """Automatically end active bathroom breaks and nurse visits when the current period ends"""
+        """End active outings when now is past the period end for the period that contained each start time."""
         try:
             now = datetime.now()
 
-            # Get current period end time
-            _, period_end_time = self.get_period_for_time(now)
-
-            if not period_end_time:
-                # No current period or period end time available
-                return
-
-            # Create period end datetime for today
-            period_end_dt = datetime.combine(now.date(), period_end_time)
-
-            # Only auto-end if we're past the period end time
-            if now <= period_end_dt:
-                return
-
-            print(f"[FIREBASE AUTO-END] Period ended at {period_end_dt}, auto-ending active breaks and visits...")
-
-            # Auto-end bathroom breaks
-            breaks_ref = self.db.collection('bathroom_breaks')
-            breaks_query = breaks_ref.where('break_end', '==', None).get()
+            breaks_ref = self.db.collection("bathroom_breaks")
+            breaks_query = breaks_ref.where("break_end", "==", None).get()
 
             for doc in breaks_query:
                 try:
                     data = doc.to_dict()
-                    break_start_str = data.get('break_start')
-
-                    if break_start_str:
-                        # Parse break start time
-                        break_start_dt = datetime.fromisoformat(break_start_str)
-
-                        # Only auto-end breaks that started before the period end
-                        if break_start_dt < period_end_dt:
-                            # Calculate duration
-                            duration = int((period_end_dt - break_start_dt).total_seconds() / 60)
-
-                            # End the break
-                            doc.reference.update({
-                                'break_end': period_end_dt.isoformat(),
-                                'duration_minutes': duration
-                            })
-
-                            print(f"[FIREBASE AUTO-END] Ended bathroom break for {data['student_uid']} (duration: {duration}min)")
-
+                    break_start_str = data.get("break_start")
+                    if not break_start_str:
+                        continue
+                    break_start_dt = datetime.fromisoformat(break_start_str)
+                    period_end_dt = self._period_end_datetime_for_timestamp(break_start_dt)
+                    if not period_end_dt or now < period_end_dt:
+                        continue
+                    duration = int((period_end_dt - break_start_dt).total_seconds() / 60)
+                    doc.reference.update({
+                        "break_end": period_end_dt.isoformat(),
+                        "duration_minutes": duration,
+                    })
+                    print(
+                        f"[FIREBASE AUTO-END] Ended bathroom break for {data['student_uid']} "
+                        f"at period end {period_end_dt} (duration: {duration}min)"
+                    )
                 except Exception as e:
                     print(f"[FIREBASE AUTO-END] Error ending bathroom break: {e}")
 
-            # Auto-end nurse visits
-            nurse_ref = self.db.collection('nurse_visits')
-            nurse_query = nurse_ref.where('visit_end', '==', None).get()
+            nurse_ref = self.db.collection("nurse_visits")
+            nurse_query = nurse_ref.where("visit_end", "==", None).get()
 
             for doc in nurse_query:
                 try:
                     data = doc.to_dict()
-                    visit_start_str = data.get('visit_start')
-
-                    if visit_start_str:
-                        # Parse visit start time
-                        visit_start_dt = datetime.fromisoformat(visit_start_str)
-
-                        # Only auto-end visits that started before the period end
-                        if visit_start_dt < period_end_dt:
-                            # Calculate duration
-                            duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
-
-                            # End the visit
-                            doc.reference.update({
-                                'visit_end': period_end_dt.isoformat(),
-                                'duration_minutes': duration
-                            })
-
-                            print(f"[FIREBASE AUTO-END] Ended nurse visit for {data['student_uid']} (duration: {duration}min)")
-
+                    visit_start_str = data.get("visit_start")
+                    if not visit_start_str:
+                        continue
+                    visit_start_dt = datetime.fromisoformat(visit_start_str)
+                    period_end_dt = self._period_end_datetime_for_timestamp(visit_start_dt)
+                    if not period_end_dt or now < period_end_dt:
+                        continue
+                    duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+                    doc.reference.update({
+                        "visit_end": period_end_dt.isoformat(),
+                        "duration_minutes": duration,
+                    })
+                    print(
+                        f"[FIREBASE AUTO-END] Ended nurse visit for {data['student_uid']} "
+                        f"at period end {period_end_dt} (duration: {duration}min)"
+                    )
                 except Exception as e:
                     print(f"[FIREBASE AUTO-END] Error ending nurse visit: {e}")
 

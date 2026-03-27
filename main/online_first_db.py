@@ -65,7 +65,8 @@ class OnlineFirstDatabase:
         self.local_db = None
         self.is_online = False
         self.mode = "unknown"  # "online", "offline", or "unknown"
-        
+        self.last_firebase_ping = None  # set on successful manual check/reconnect
+
         # Thread for checking connectivity
         self.check_thread = None
         self.check_active = True
@@ -115,6 +116,10 @@ class OnlineFirstDatabase:
             # Check if there's existing offline data that needs syncing
             self._check_and_sync_offline_data_on_startup()
             self.backfill_active_records()
+            try:
+                self.init_local_db()
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Local student cache unavailable: {e}")
         else:
             print("[ONLINE-FIRST] Falling back to offline mode...")
             self.is_online = False
@@ -474,9 +479,11 @@ class OnlineFirstDatabase:
             cursor = self.local_db.conn.cursor()
             synced_count = 0
             
+            from student_db import normalize_nfc_uid
+
             for doc in students_ref:
                 data = doc.to_dict()
-                nfc_uid = data.get('nfc_uid', '').strip()
+                nfc_raw = (data.get('nfc_uid') or '').strip()
                 student_id = str(data.get('student_id', '')).strip()
                 name = data.get('name', '').strip()
                 created_at = data.get('created_at', '')
@@ -488,7 +495,8 @@ class OnlineFirstDatabase:
                     created_at = str(created_at)
                 
                 if student_id and name:
-                    primary_key = doc.id
+                    # Use NFC UID as SQLite primary key when present so lookups match card scans
+                    primary_key = normalize_nfc_uid(nfc_raw) if nfc_raw else doc.id
                     cursor.execute("""
                         INSERT OR REPLACE INTO students (id, student_id, name, created_at)
                         VALUES (?, ?, ?, ?)
@@ -524,19 +532,29 @@ class OnlineFirstDatabase:
     
     def get_student_by_uid(self, nfc_uid):
         """Get student by NFC UID"""
+        result = None
         if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.get_student_by_uid(nfc_uid)
-        elif self.mode == "offline" and self.local_db:
-            return self.local_db.get_student_by_uid(nfc_uid)
-        return None
+            try:
+                result = self.firebase_db.get_student_by_uid(nfc_uid)
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Firebase get_student_by_uid failed: {e}")
+                result = None
+        if result is None and self.local_db:
+            result = self.local_db.get_student_by_uid(nfc_uid)
+        return result
     
     def get_student_by_student_id(self, student_id):
         """Get student by student ID"""
+        result = None
         if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.get_student_by_student_id(student_id)
-        elif self.mode == "offline" and self.local_db:
-            return self.local_db.get_student_by_student_id(student_id)
-        return None
+            try:
+                result = self.firebase_db.get_student_by_student_id(student_id)
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Firebase get_student_by_student_id failed: {e}")
+                result = None
+        if result is None and self.local_db:
+            result = self.local_db.get_student_by_student_id(student_id)
+        return result
     
     def check_in(self, nfc_uid=None, student_id=None):
         """Check in a student"""
@@ -684,6 +702,21 @@ class OnlineFirstDatabase:
             return self.firebase_db.auto_checkout_students()
         elif self.mode == "offline" and self.local_db:
             return self.local_db.auto_checkout_students()
+
+    def auto_end_breaks_at_period_end(self):
+        """End outings at period boundary (lightweight; safe to call every second from UI)."""
+        if self.mode == "online" and self.firebase_db:
+            return self.firebase_db.auto_end_breaks_at_period_end()
+        if self.local_db:
+            return self.local_db.auto_end_breaks_at_period_end()
+
+    def get_students_on_break(self):
+        """Active bathroom breaks for this classroom."""
+        if self.mode == "online" and self.firebase_db:
+            return self.firebase_db.get_students_on_break()
+        if self.local_db:
+            return self.local_db.get_students_on_break()
+        return []
     
     def get_students_without_nfc_uid(self):
         """Get students without NFC UID"""
@@ -718,15 +751,76 @@ class OnlineFirstDatabase:
             self._transition_to_online()
         elif self.mode == "online":
             print("[ONLINE-FIRST] Already online, no sync needed")
+
+    def _pending_local_data_count(self):
+        """Rows in local SQLite waiting to sync when offline."""
+        if self.mode != "offline" or not self.local_db:
+            return 0
+        try:
+            cursor = self.local_db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM attendance")
+            attendance_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM bathroom_breaks")
+            breaks_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM nurse_visits")
+            visits_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM water_visits")
+            water_count = cursor.fetchone()[0]
+            return attendance_count + breaks_count + visits_count + water_count
+        except Exception:
+            return 0
+
+    def check_firebase_connection(self):
+        """
+        Lightweight check: internet + Firestore read. Does not initialize Firebase.
+        Returns (success: bool, message: str).
+        """
+        if not self.check_internet_connection(timeout=5):
+            return False, "No internet connection"
+        if self.firebase_db is None:
+            return False, "Firebase client not initialized (offline). Use Reconnect to try again."
+        ok, msg = self.firebase_db.ping_firestore()
+        if ok:
+            self.last_firebase_ping = datetime.now()
+            return True, "Firebase / Firestore is reachable."
+        return False, f"Firestore error: {msg}"
+
+    def reconnect_firebase(self):
+        """
+        (Re)establish Firebase: ping existing client, or reinitialize after failed ping / missing client.
+        Returns (success: bool, message: str).
+        """
+        if not self.check_internet_connection(timeout=8):
+            return False, "No internet connection"
+        if self.firebase_db is not None:
+            ok, msg = self.firebase_db.ping_firestore()
+            if ok:
+                self.is_online = True
+                self.mode = "online"
+                self.last_firebase_ping = datetime.now()
+                return True, "Firebase is reachable."
+            print(f"[ONLINE-FIRST] Ping failed ({msg}), reinitializing Firebase client...")
+            self.firebase_db = None
+        self._transition_to_online()
+        if self.firebase_db is not None and self.mode == "online":
+            self.is_online = True
+            self.last_firebase_ping = datetime.now()
+            return True, "Reconnected to Firebase."
+        return False, "Could not connect to Firebase. See console for details."
     
     def get_sync_status(self):
-        """Get current database mode status"""
+        """Status for settings UI (keys aligned with hybrid_db.get_sync_status)."""
+        pending = self._pending_local_data_count()
+        firebase_ok = self.mode == "online" and self.firebase_db is not None
         return {
             'mode': self.mode,
             'is_online': self.is_online,
-            'firebase_connected': self.firebase_db is not None,
+            'firebase_connected': firebase_ok,
             'local_db_active': self.local_db is not None,
-            'description': 'Online (Firestore)' if self.mode == 'online' else 'Offline (Local SQLite)'
+            'description': 'Online (Firestore)' if self.mode == 'online' else 'Offline (Local SQLite)',
+            'last_sync': self.last_firebase_ping,
+            'pending_changes': pending,
+            'sync_interval_minutes': self.connectivity_check_interval / 60,
         }
     
     def cleanup(self):

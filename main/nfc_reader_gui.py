@@ -32,6 +32,7 @@ from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay,
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
 from printer import ThermalPrinter
+from student_db import normalize_nfc_uid, normalize_student_id_key
 
 
 class NFCReaderGUI(QMainWindow):
@@ -266,7 +267,7 @@ class NFCReaderGUI(QMainWindow):
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
             parent_window=self,
-            current_version="1.0.23",  # Update this version number for each release
+            current_version="1.0.24",  # Update this version number for each release
             repo_owner="jdrevnyak",  # Your GitHub username
             repo_name="IdPass"  # Your repository name
         )
@@ -408,7 +409,8 @@ class NFCReaderGUI(QMainWindow):
             uid_part = data.split("UID Value:")[1].strip()
             uid = uid_part.replace("0x", "").replace(" ", "")
             print(f"[DEBUG] Extracted UID: '{uid}'")
-            return uid
+            norm = normalize_nfc_uid(uid)
+            return norm if norm else None
         print(f"[DEBUG] No UID found in data")
         return None
     
@@ -539,6 +541,11 @@ class NFCReaderGUI(QMainWindow):
     def update_period_label(self):
         """Update the label under the clock with the current period/passing."""
         now = datetime.now()
+        try:
+            self.db.auto_end_breaks_at_period_end()
+        except Exception as e:
+            print(f"[GUI] auto_end_breaks_at_period_end: {e}")
+
         current_period = self._determine_current_period(now)
 
         # Auto-end all bathroom breaks during passing periods
@@ -629,6 +636,10 @@ class NFCReaderGUI(QMainWindow):
 
     def handle_manual_id_entry(self, student_id):
         """Handle manual ID entry from keypad"""
+        student_id = normalize_student_id_key(student_id)
+        if not student_id:
+            self.show_prompt_message("Enter a student ID.")
+            return
         result = self.db.get_student_by_student_id(student_id)
         if result:
             nfc_uid, student_name = result
@@ -684,6 +695,10 @@ class NFCReaderGUI(QMainWindow):
             student_id_db, student_name_db = result
             identifier = nfc_uid
         elif student_id:
+            student_id = normalize_student_id_key(student_id)
+            if not student_id:
+                self.prompt.setText("No student information provided.")
+                return
             result = self.db.get_student_by_student_id(student_id)
             if not result:
                 self.prompt.setText("No student found with that ID.")
@@ -747,6 +762,10 @@ class NFCReaderGUI(QMainWindow):
             student_id_db, student_name_db = result
             identifier = nfc_uid if nfc_uid else student_id_db
         elif student_id:
+            student_id = normalize_student_id_key(student_id)
+            if not student_id:
+                self.prompt.setText("No student information provided.")
+                return
             result = self.db.get_student_by_student_id(student_id)
             if not result:
                 self.prompt.setText("No student found with that ID.")
@@ -802,6 +821,10 @@ class NFCReaderGUI(QMainWindow):
             student_id_db, student_name_db = result
             identifier = nfc_uid if nfc_uid else student_id_db
         elif student_id:
+            student_id = normalize_student_id_key(student_id)
+            if not student_id:
+                self.prompt.setText("No student information provided.")
+                return
             result = self.db.get_student_by_student_id(student_id)
             if not result:
                 self.prompt.setText("No student found with that ID.")
