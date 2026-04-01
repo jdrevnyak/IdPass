@@ -702,9 +702,9 @@ class OnlineFirstDatabase:
         return result
     
     def has_students_out(self):
-        """Check if any students are out.  Cached for 15 seconds to avoid
-        redundant Firestore reads from the 10-second LED timer."""
-        return self._get_cached("has_students_out", 15, self._fetch_has_students_out)
+        """Check if any students are out.  Cached until invalidated by a
+        start/end event so periodic timers never hit Firestore."""
+        return self._get_cached("has_students_out", 86400, self._fetch_has_students_out)
 
     def _fetch_has_students_out(self):
         """Uncached check for students currently out."""
@@ -759,6 +759,11 @@ class OnlineFirstDatabase:
         every 30 seconds so the 1-second GUI timer doesn't flood Firestore."""
         if not self._should_run("auto_end_breaks", 30):
             return
+        cached = self._cache.get("active_outings")
+        if cached is not None:
+            _, outings = cached
+            if not outings:
+                return
         if self.mode == "online" and self.firebase_db:
             return self.firebase_db.auto_end_breaks_at_period_end()
         if self.local_db:
@@ -779,11 +784,11 @@ class OnlineFirstDatabase:
         return []
 
     def get_active_outings(self):
-        """Return active outings depending on current mode.  Results are
-        cached for 15 seconds so the 1-second prompt timer doesn't flood
-        Firestore.  The elapsed-time display still ticks every second
-        because the GUI recomputes it from the cached start timestamp."""
-        return self._get_cached("active_outings", 15, self._fetch_active_outings)
+        """Return active outings depending on current mode.  Cached until
+        invalidated by a start/end event so the 1-second prompt timer
+        never hits Firestore.  The elapsed-time display still ticks every
+        second because the GUI recomputes it from the cached start timestamp."""
+        return self._get_cached("active_outings", 86400, self._fetch_active_outings)
 
     def _fetch_active_outings(self):
         """Uncached fetch of active outings from the current backend."""

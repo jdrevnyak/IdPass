@@ -507,6 +507,15 @@ class SettingsOverlay(QWidget):
         )
         test_printer_btn.clicked.connect(self.run_printer_test)
         app_control_layout.addWidget(test_printer_btn)
+
+        reprint_btn = QPushButton('Reprint Last Pass')
+        reprint_btn.setFont(QFont('Arial', 14, QFont.Bold))
+        reprint_btn.setStyleSheet(
+            'QPushButton { background: #8e44ad; color: white; border-radius: 12px; padding: 8px 16px; } '
+            'QPushButton:hover { background: #7d3c98; } QPushButton:pressed { background: #6c3483; }'
+        )
+        reprint_btn.clicked.connect(self.reprint_last_pass)
+        app_control_layout.addWidget(reprint_btn)
         
         # Quit button
         quit_btn = QPushButton('Quit App')
@@ -1068,6 +1077,20 @@ class SettingsOverlay(QWidget):
                 "Printer Test",
                 "Could not connect or print. Check the USB cable and power, then try again.",
             )
+
+    def reprint_last_pass(self):
+        """Reprint the most recently printed hall pass."""
+        printer = getattr(self.parent, "printer", None)
+        if printer is None:
+            QMessageBox.warning(self, "Reprint", "Printer is not available in this build.")
+            return
+        result, msg = printer.reprint_last_pass()
+        if msg:
+            QMessageBox.information(self, "Reprint", msg)
+        elif result:
+            QMessageBox.information(self, "Reprint", "Last hall pass reprinted successfully.")
+        else:
+            QMessageBox.warning(self, "Reprint", "Failed to reprint. Check the printer connection.")
 
     def restart_application(self):
         """Restart the application"""

@@ -43,6 +43,7 @@ class NFCReaderGUI(QMainWindow):
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
+    _MIN_PRESS_DURATION_S = 0.1  # 100ms ghost-touch filter threshold
     # Derived from the canonical PERIODS list in student_db.py (single source of truth).
     # Overridden at runtime by periods loaded from Firebase when available.
     DEFAULT_SCHEDULE = [
@@ -221,7 +222,7 @@ class NFCReaderGUI(QMainWindow):
         # Periodic auto-checkout every minute
         self.auto_checkout_timer = QTimer(self)
         self.auto_checkout_timer.timeout.connect(self.db.auto_checkout_students)
-        self.auto_checkout_timer.start(60 * 1000)  # every 60 seconds
+        self.auto_checkout_timer.start(300 * 1000)  # every 5 minutes
 
         # Auto-end breaks during passing periods
         self._last_period = None
@@ -247,6 +248,12 @@ class NFCReaderGUI(QMainWindow):
         # Connect water button to water overlay
         self.water_button.clicked.connect(self.show_water_overlay)
         self.water_overlay = WaterOverlay(self)
+
+        # Ghost-touch protection: track press timestamps on visit buttons
+        self._button_press_times = {}
+        for btn in (self.break_start_button, self.nurse_button, self.water_button):
+            btn.installEventFilter(self)
+            self._button_press_times[btn] = None
         
         # Try to auto-connect to ESP32
         self.auto_connect_esp32()
@@ -657,7 +664,7 @@ class NFCReaderGUI(QMainWindow):
             self.show_prompt_message(f"No student found with ID: {student_id}")
 
     def eventFilter(self, obj, event):
-        """Event filter for long press on header to show settings"""
+        """Event filter for long press on header and ghost-touch guard on visit buttons."""
         if obj == self.header:
             if event.type() == event.MouseButtonPress:
                 self._header_press_time = datetime.now()
@@ -666,22 +673,41 @@ class NFCReaderGUI(QMainWindow):
                 self._header_timer.stop()
             elif event.type() == event.Leave:
                 self._header_timer.stop()
+        if obj in self._button_press_times and event.type() == event.MouseButtonPress:
+            self._button_press_times[obj] = datetime.now()
         return super().eventFilter(obj, event)
 
     def _show_settings_overlay(self):
         """Show the settings overlay"""
         self.settings_overlay.show_overlay()
 
+    def _is_ghost_touch(self, button):
+        """Return True if the button press was shorter than the ghost-touch threshold."""
+        press_time = self._button_press_times.get(button)
+        if press_time is None:
+            return False
+        elapsed = (datetime.now() - press_time).total_seconds()
+        if elapsed < self._MIN_PRESS_DURATION_S:
+            print(f"[GHOST] Button press too short ({elapsed*1000:.0f}ms), ignoring")
+            return True
+        return False
+
     def show_bathroom_overlay(self):
         """Show the bathroom break overlay"""
+        if self._is_ghost_touch(self.break_start_button):
+            return
         self.bathroom_overlay.show_overlay()
 
     def show_nurse_overlay(self):
         """Show the nurse visit overlay"""
+        if self._is_ghost_touch(self.nurse_button):
+            return
         self.nurse_overlay.show_overlay()
     
     def show_water_overlay(self):
         """Show the water fountain overlay"""
+        if self._is_ghost_touch(self.water_button):
+            return
         self.water_overlay.show_overlay()
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):

@@ -1,6 +1,6 @@
-# Release Notes for v1.0.25
+# Release Notes for v1.0.26
 
-**Release Date:** 2026-03-26
+**Release Date:** 2026-03-31
 
 ## What's New
 

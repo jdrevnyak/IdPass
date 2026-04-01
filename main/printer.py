@@ -19,6 +19,7 @@ class ThermalPrinter:
         self.product_id = product_id
         self.profile = profile
         self.printer = None
+        self.last_pass_params = None
         self._connect()
 
     def _disconnect(self):
@@ -133,6 +134,13 @@ class ThermalPrinter:
                 # Some cheap printers don't support cut, just ignore
                 pass
             
+            self.last_pass_params = {
+                "student_name": student_name,
+                "student_id": student_id,
+                "pass_type": pass_type,
+                "location": location,
+                "timestamp": timestamp,
+            }
             return True
 
         except Exception as e:
@@ -150,6 +158,12 @@ class ThermalPrinter:
                         _allow_retry=False,
                     )
             return False
+
+    def reprint_last_pass(self):
+        """Reprint the most recently printed hall pass using cached parameters."""
+        if self.last_pass_params is None:
+            return False, "No hall pass has been printed yet this session."
+        return self.print_pass(**self.last_pass_params), None
 
     def test_print(self):
         """
