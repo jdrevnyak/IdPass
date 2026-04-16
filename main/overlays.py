@@ -7,11 +7,14 @@ import serial.tools.list_ports
 import os
 import sys
 import subprocess
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QComboBox, QPushButton, QMessageBox, QLineEdit,
-                            QFormLayout, QGroupBox, QGridLayout, QSizePolicy, QApplication)
+                            QFormLayout, QGroupBox, QGridLayout, QSizePolicy, QApplication,
+                            QScrollArea, QScroller, QFrame)
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
+
+from network_status import get_wifi_info, try_wifi_reconnect
 
 
 class KeypadOverlay(QWidget):
@@ -108,6 +111,10 @@ class KeypadOverlay(QWidget):
 class OnScreenKeyboard(QWidget):
     """Generic on-screen keyboard overlay for text input fields."""
 
+    _KEY_W = 56
+    _KEY_H = 48
+    _KEY_SPACING = 5
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -123,54 +130,61 @@ class OnScreenKeyboard(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         container = QWidget()
-        container.setStyleSheet("background: white; border-radius: 28px;")
-        container.setFixedSize(760, 420)
+        container.setStyleSheet("background: #ecf0f4; border-radius: 18px;")
+        container.setFixedSize(780, 430)
         vbox = QVBoxLayout(container)
         vbox.setAlignment(Qt.AlignTop)
-        vbox.setContentsMargins(24, 24, 24, 24)
-        vbox.setSpacing(16)
+        vbox.setContentsMargins(16, 14, 16, 14)
+        vbox.setSpacing(8)
 
         self.title_label = QLabel("On-Screen Keyboard")
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setFont(QFont('Arial', 24, QFont.Bold))
+        self.title_label.setFont(QFont('Arial', 18, QFont.Bold))
         self.title_label.setStyleSheet("color: #23405a;")
         vbox.addWidget(self.title_label)
 
         self.preview_field = QLineEdit()
         self.preview_field.setReadOnly(True)
         self.preview_field.setAlignment(Qt.AlignCenter)
-        self.preview_field.setFont(QFont('Arial', 24, QFont.Bold))
+        self.preview_field.setFont(QFont('Arial', 20, QFont.Bold))
         self.preview_field.setStyleSheet(
-            "QLineEdit { background: #f5f7fa; color: #23405a; border: 3px solid #1f8b83; border-radius: 16px; padding: 14px; }"
+            "QLineEdit { background: white; color: #23405a; border: 2px solid #1f8b83; "
+            "border-radius: 12px; padding: 8px; }"
         )
+        self.preview_field.setFixedHeight(44)
         vbox.addWidget(self.preview_field)
+
+        key_style = (
+            "QPushButton { background: white; color: #23405a; border-radius: 8px; "
+            "border: 1px solid #c8d0dc; font-weight: bold; }"
+            "QPushButton:pressed { background: #cfd8e3; }"
+        )
 
         key_rows = [
             list("1234567890"),
             list("QWERTYUIOP"),
             list("ASDFGHJKL"),
-            list("ZXCVBNM")
+            list("ZXCVBNM"),
         ]
 
         for row_keys in key_rows:
             row_layout = QHBoxLayout()
-            row_layout.setSpacing(8)
-            row_layout.setAlignment(Qt.AlignCenter)
+            row_layout.setSpacing(self._KEY_SPACING)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addStretch(1)
             for key in row_keys:
                 btn = QPushButton(key)
-                btn.setFixedSize(64, 64)
-                btn.setFont(QFont('Arial', 20, QFont.Bold))
-                btn.setStyleSheet(
-                    "QPushButton { background: #e8edf5; color: #23405a; border-radius: 10px; border: 2px solid #d0dae8; }"
-                    "QPushButton:hover { background: #d7e1f0; }"
-                    "QPushButton:pressed { background: #c4d2e6; }"
-                )
+                btn.setFixedSize(self._KEY_W, self._KEY_H)
+                btn.setFont(QFont('Arial', 16, QFont.Bold))
+                btn.setStyleSheet(key_style)
                 btn.clicked.connect(lambda _, char=key: self._append_text(char))
                 row_layout.addWidget(btn)
+            row_layout.addStretch(1)
             vbox.addLayout(row_layout)
 
         control_layout = QHBoxLayout()
-        control_layout.setSpacing(14)
+        control_layout.setSpacing(8)
+        control_layout.setContentsMargins(0, 4, 0, 0)
 
         control_buttons = [
             ("Space", self._append_space, "#2bb3a3"),
@@ -179,17 +193,16 @@ class OnScreenKeyboard(QWidget):
             ("Done", self.hide, "#3498db"),
         ]
 
-        for label, handler, style in control_buttons:
+        for label, handler, bg in control_buttons:
             btn = QPushButton(label)
-            btn.setMinimumSize(0, 64)
-            btn.setFont(QFont('Arial', 18, QFont.Bold))
+            btn.setFixedHeight(48)
+            btn.setFont(QFont('Arial', 15, QFont.Bold))
             btn.setStyleSheet(
-                f"QPushButton {{ background: {style}; color: white; border-radius: 16px; padding: 18px 22px; }}"
-                f"QPushButton:hover {{ background: {self._darken_color(style, 0.88)}; }}"
-                f"QPushButton:pressed {{ background: {self._darken_color(style, 0.75)}; }}"
+                f"QPushButton {{ background: {bg}; color: white; border-radius: 10px; padding: 0 18px; }}"
+                f"QPushButton:pressed {{ background: {self._darken_color(bg, 0.75)}; }}"
             )
             btn.clicked.connect(handler)
-            control_layout.addWidget(btn)
+            control_layout.addWidget(btn, 1)
 
         vbox.addLayout(control_layout)
         main_layout.addWidget(container)
@@ -245,169 +258,472 @@ class OnScreenKeyboard(QWidget):
             self.preview_field.setText(self.target_field.text())
         else:
             self.preview_field.setText("")
+
+
+class PasswordOverlay(QWidget):
+    """Fullscreen numeric PIN overlay that gates access to the settings page."""
+
+    authenticated = pyqtSignal()
+
+    _MAX_PIN_LEN = 8
+    _AUTO_DISMISS_MS = 30000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(0,0,0,0.6);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setVisible(False)
+        if parent:
+            self.setGeometry(parent.rect())
+
+        self._pin = ""
+        self._custom_submit = None
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setAlignment(Qt.AlignCenter)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QWidget()
+        container.setStyleSheet("background: white; border-radius: 24px;")
+        container.setFixedSize(420, 460)
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(28, 20, 28, 20)
+        vbox.setSpacing(10)
+
+        self._title_label = QLabel("Enter PIN")
+        self._title_label.setAlignment(Qt.AlignCenter)
+        self._title_label.setFont(QFont("Arial", 22, QFont.Bold))
+        self._title_label.setStyleSheet("color: #23405a;")
+        vbox.addWidget(self._title_label)
+
+        self._dots_label = QLabel("")
+        self._dots_label.setAlignment(Qt.AlignCenter)
+        self._dots_label.setFont(QFont("Arial", 32))
+        self._dots_label.setStyleSheet("color: #23405a; letter-spacing: 12px;")
+        self._dots_label.setFixedHeight(48)
+        vbox.addWidget(self._dots_label)
+
+        self._error_label = QLabel("")
+        self._error_label.setAlignment(Qt.AlignCenter)
+        self._error_label.setFont(QFont("Arial", 13))
+        self._error_label.setStyleSheet("color: #e74c3c;")
+        self._error_label.setFixedHeight(20)
+        vbox.addWidget(self._error_label)
+
+        digit_style = (
+            "QPushButton { background: #f0f3f8; color: #23405a; border-radius: 12px; "
+            "border: 1px solid #d0dae8; font-weight: bold; }"
+            "QPushButton:pressed { background: #cfd8e3; }"
+        )
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for i, digit in enumerate("123456789"):
+            btn = QPushButton(digit)
+            btn.setFixedSize(90, 64)
+            btn.setFont(QFont("Arial", 24, QFont.Bold))
+            btn.setStyleSheet(digit_style)
+            btn.clicked.connect(lambda _, d=digit: self._digit_pressed(d))
+            grid.addWidget(btn, i // 3, i % 3, Qt.AlignCenter)
+
+        zero_btn = QPushButton("0")
+        zero_btn.setFixedSize(90, 64)
+        zero_btn.setFont(QFont("Arial", 24, QFont.Bold))
+        zero_btn.setStyleSheet(digit_style)
+        zero_btn.clicked.connect(lambda: self._digit_pressed("0"))
+        grid.addWidget(zero_btn, 3, 1, Qt.AlignCenter)
+
+        backspace_btn = QPushButton("\u232b")
+        backspace_btn.setFixedSize(90, 64)
+        backspace_btn.setFont(QFont("Arial", 22, QFont.Bold))
+        backspace_btn.setStyleSheet(
+            "QPushButton { background: #e67e22; color: white; border-radius: 12px; }"
+            "QPushButton:pressed { background: #bf6516; }"
+        )
+        backspace_btn.clicked.connect(self._backspace)
+        grid.addWidget(backspace_btn, 3, 2, Qt.AlignCenter)
+
+        clear_btn = QPushButton("C")
+        clear_btn.setFixedSize(90, 64)
+        clear_btn.setFont(QFont("Arial", 22, QFont.Bold))
+        clear_btn.setStyleSheet(
+            "QPushButton { background: #c0392b; color: white; border-radius: 12px; }"
+            "QPushButton:pressed { background: #922b21; }"
+        )
+        clear_btn.clicked.connect(self._clear)
+        grid.addWidget(clear_btn, 3, 0, Qt.AlignCenter)
+
+        vbox.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(48)
+        cancel_btn.setFont(QFont("Arial", 15, QFont.Bold))
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 12px; }"
+            "QPushButton:pressed { background: #bbb; }"
+        )
+        cancel_btn.clicked.connect(self.hide)
+        btn_row.addWidget(cancel_btn, 1)
+
+        self._unlock_btn = QPushButton("Unlock")
+        self._unlock_btn.setFixedHeight(48)
+        self._unlock_btn.setFont(QFont("Arial", 15, QFont.Bold))
+        self._unlock_btn.setStyleSheet(
+            "QPushButton { background: #2bb3a3; color: white; border-radius: 12px; }"
+            "QPushButton:pressed { background: #1f8b83; }"
+        )
+        self._unlock_btn.clicked.connect(self._try_authenticate)
+        btn_row.addWidget(self._unlock_btn, 1)
+
+        vbox.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.hide)
+
+    # ------------------------------------------------------------------
+
+    def show_overlay(self, *, title=None, submit_label=None, on_submit=None):
+        """Show the PIN overlay.
+
+        *title* / *submit_label* let callers reuse this for "Enter New PIN" flows.
+        *on_submit* replaces the default authentication check — receives the entered
+        PIN string and should return True to close the overlay or False to stay open.
+        """
+        self._pin = ""
+        self._update_dots()
+        self._error_label.setText("")
+        self._custom_submit = on_submit
+        self._title_label.setText(title or "Enter PIN")
+        self._unlock_btn.setText(submit_label or "Unlock")
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+        self.setVisible(True)
+        self.raise_()
+        self._dismiss_timer.start(self._AUTO_DISMISS_MS)
+
+    def hideEvent(self, event):
+        self._dismiss_timer.stop()
+        super().hideEvent(event)
+
+    # ------------------------------------------------------------------
+
+    def _digit_pressed(self, digit):
+        if len(self._pin) >= self._MAX_PIN_LEN:
+            return
+        self._pin += digit
+        self._update_dots()
+        self._error_label.setText("")
+
+    def _backspace(self):
+        self._pin = self._pin[:-1]
+        self._update_dots()
+        self._error_label.setText("")
+
+    def _clear(self):
+        self._pin = ""
+        self._update_dots()
+        self._error_label.setText("")
+
+    def _update_dots(self):
+        self._dots_label.setText("\u25cf " * len(self._pin))
+
+    # ------------------------------------------------------------------
+
+    def _get_correct_pin(self):
+        from device_config import load_device_config
+        cfg = load_device_config()
+        return cfg.get("settings_pin", "1234")
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key_Escape:
+            self.hide()
+        elif key == Qt.Key_Return or key == Qt.Key_Enter:
+            self._try_authenticate()
+        elif key == Qt.Key_Backspace:
+            self._backspace()
+        elif event.text().isdigit():
+            self._digit_pressed(event.text())
+        else:
+            super().keyPressEvent(event)
+
+    def _try_authenticate(self):
+        cb = getattr(self, "_custom_submit", None)
+        if cb is not None:
+            if cb(self._pin):
+                self._dismiss_timer.stop()
+                self.hide()
+            return
+        if self._pin == self._get_correct_pin():
+            self._dismiss_timer.stop()
+            self.hide()
+            self.authenticated.emit()
+        else:
+            self._error_label.setText("Incorrect PIN")
+            self._pin = ""
+            self._update_dots()
+
+    def mousePressEvent(self, event):
+        for child in self.children():
+            if isinstance(child, QWidget) and child.geometry().contains(event.pos()):
+                return
+        self.hide()
+
+
 class SettingsOverlay(QWidget):
     """Overlay for application settings including ESP32 connection."""
+
+    # Compact 5" / 800×480-friendly group box chrome
+    _SETTINGS_GROUP_STYLE = (
+        "QGroupBox { font-weight: bold; border: 1px solid #23405a; border-radius: 6px; "
+        "margin-top: 4px; padding-top: 6px; } "
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+    )
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("background: rgba(0,0,0,0.5);")
+        self.setStyleSheet("background: rgba(0,0,0,0.55);")
         self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
         self.setVisible(False)
         self.setGeometry(parent.rect())
         self.parent = parent
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create scrollable container
-        from PyQt5.QtWidgets import QScrollArea
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(0)
+
+        # Fixed header: title + close always visible (no scrolling to exit)
+        header = QWidget()
+        header.setStyleSheet("background: white; border-top-left-radius: 14px; border-top-right-radius: 14px;")
+        header_l = QHBoxLayout(header)
+        header_l.setContentsMargins(12, 8, 10, 8)
+        title = QLabel("Settings")
+        title.setFont(QFont("Arial", 17, QFont.Bold))
+        title.setStyleSheet("color: #23405a;")
+        header_l.addWidget(title)
+        header_l.addStretch()
+        close_header = QPushButton("Close")
+        close_header.setFont(QFont("Arial", 13, QFont.Bold))
+        close_header.setMinimumHeight(36)
+        close_header.setStyleSheet(
+            "QPushButton { background: #95a5a6; color: white; border-radius: 8px; padding: 6px 16px; } "
+            "QPushButton:hover { background: #7f8c8d; } QPushButton:pressed { background: #6c7b7d; }"
+        )
+        close_header.clicked.connect(lambda: self.setVisible(False))
+        header_l.addWidget(close_header)
+        root.addWidget(header)
+
         scroll_area = QScrollArea()
-        scroll_area.setFixedSize(550, 450)  # Fits in 800x480 screen
+        self._settings_scroll = scroll_area
         scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setFrameShape(0)  # NoFrame
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_area.setStyleSheet("""
             QScrollArea {
                 border: none;
-                border-radius: 24px;
                 background: white;
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
             }
             QScrollBar:vertical {
-                background: #f0f0f0;
-                width: 12px;
-                border-radius: 6px;
-                margin: 0px;
+                background: #e8ecf0;
+                width: 20px;
+                border-radius: 8px;
+                margin: 4px 2px 4px 0;
+                border: none;
             }
             QScrollBar::handle:vertical {
-                background: #c0c0c0;
-                border-radius: 6px;
-                min-height: 20px;
+                background: #8fa4b8;
+                border-radius: 8px;
+                min-height: 48px;
             }
             QScrollBar::handle:vertical:hover {
-                background: #a0a0a0;
+                background: #6d8499;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
             }
         """)
-        
+        try:
+            QScroller.grabGesture(scroll_area.viewport(), QScroller.LeftMouseButtonGesture)
+        except Exception:
+            pass
+
         container = QWidget()
-        container.setStyleSheet("background: white; border-radius: 24px;")
+        container.setStyleSheet("background: white;")
         vbox = QVBoxLayout(container)
         vbox.setAlignment(Qt.AlignTop)
-        vbox.setContentsMargins(20, 20, 20, 20)
-        vbox.setSpacing(12)
-        
-        # Title
-        title = QLabel("Settings")
-        title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont('Arial', 22, QFont.Bold))
-        title.setStyleSheet("color: #23405a; margin-bottom: 8px;")
-        vbox.addWidget(title)
+        vbox.setContentsMargins(12, 8, 12, 14)
+        vbox.setSpacing(8)
         
         # Serial Connection Section
-        connection_group = QGroupBox("ESP32 Connection")
-        connection_group.setFont(QFont('Arial', 14, QFont.Bold))
-        connection_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        connection_group = QGroupBox("ESP32")
+        connection_group.setFont(QFont("Arial", 12, QFont.Bold))
+        connection_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
         connection_layout = QVBoxLayout(connection_group)
+        connection_layout.setSpacing(6)
         
         # Port selection
         port_layout = QHBoxLayout()
-        port_layout.addWidget(QLabel("Port:"))
+        port_lbl = QLabel("Port:")
+        port_lbl.setFont(QFont("Arial", 11))
+        port_layout.addWidget(port_lbl)
         self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(200)
+        self.port_combo.setMinimumWidth(140)
+        self.port_combo.setFont(QFont("Arial", 11))
         self.refresh_ports()
-        port_layout.addWidget(self.port_combo)
+        port_layout.addWidget(self.port_combo, 1)
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setFont(QFont("Arial", 11))
+        refresh_btn.setMinimumHeight(32)
         refresh_btn.clicked.connect(self.refresh_ports)
         port_layout.addWidget(refresh_btn)
         connection_layout.addLayout(port_layout)
-        
-        # Connection button
+
         self.connect_button = QPushButton("Connect")
+        self.connect_button.setMinimumHeight(36)
+        self.connect_button.setFont(QFont("Arial", 12, QFont.Bold))
         self.connect_button.clicked.connect(self.toggle_connection)
-        self.connect_button.setStyleSheet('QPushButton { background: #2bb3a3; color: white; border-radius: 12px; padding: 8px 0; } QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }')
+        self.connect_button.setStyleSheet(
+            "QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 6px 0; } "
+            "QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }"
+        )
         connection_layout.addWidget(self.connect_button)
-        
-        # Status label
+
         self.status_label = QLabel("Status: Disconnected")
-        self.status_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #666; font-size: 11px;")
         connection_layout.addWidget(self.status_label)
         
         vbox.addWidget(connection_group)
-        
-        # Database Sync Status Section
-        sync_group = QGroupBox("Database Sync Status")
-        sync_group.setFont(QFont('Arial', 14, QFont.Bold))
-        sync_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
-        sync_layout = QVBoxLayout(sync_group)
-        
-        # Sync status label
-        self.sync_status_label = QLabel("Checking sync status...")
-        self.sync_status_label.setStyleSheet("color: #666; font-size: 12px; margin: 5px 0;")
-        sync_layout.addWidget(self.sync_status_label)
-        
-        # Force sync button
-        force_sync_btn = QPushButton('Force Sync Now')
-        force_sync_btn.setFont(QFont('Arial', 12))
-        force_sync_btn.setStyleSheet('QPushButton { background: #3498db; color: white; border-radius: 8px; padding: 6px 12px; } QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }')
-        force_sync_btn.clicked.connect(self.force_sync)
-        sync_layout.addWidget(force_sync_btn)
 
-        firebase_check_btn = QPushButton('Check Firebase Connection')
-        firebase_check_btn.setFont(QFont('Arial', 12))
+        wifi_group = QGroupBox("Wi-Fi")
+        wifi_group.setFont(QFont("Arial", 12, QFont.Bold))
+        wifi_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
+        wifi_layout = QVBoxLayout(wifi_group)
+        wifi_layout.setSpacing(6)
+        self.wifi_status_label = QLabel("Loading…")
+        self.wifi_status_label.setWordWrap(True)
+        self.wifi_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        wifi_layout.addWidget(self.wifi_status_label)
+        wifi_btn_row = QHBoxLayout()
+        wifi_btn_row.setSpacing(6)
+        refresh_wifi_btn = QPushButton("Refresh")
+        refresh_wifi_btn.setFont(QFont("Arial", 11))
+        refresh_wifi_btn.setMinimumHeight(34)
+        refresh_wifi_btn.setStyleSheet(
+            "QPushButton { background: #5dade2; color: white; border-radius: 6px; padding: 4px 8px; } "
+            "QPushButton:hover { background: #3498db; } QPushButton:pressed { background: #2874a6; }"
+        )
+        refresh_wifi_btn.clicked.connect(self.update_wifi_status)
+        wifi_btn_row.addWidget(refresh_wifi_btn, 1)
+        retry_wifi_btn = QPushButton("Retry")
+        retry_wifi_btn.setFont(QFont("Arial", 11))
+        retry_wifi_btn.setMinimumHeight(34)
+        retry_wifi_btn.setStyleSheet(
+            "QPushButton { background: #1abc9c; color: white; border-radius: 6px; padding: 4px 8px; } "
+            "QPushButton:hover { background: #17a589; } QPushButton:pressed { background: #148f77; }"
+        )
+        retry_wifi_btn.clicked.connect(self.retry_wifi_now)
+        wifi_btn_row.addWidget(retry_wifi_btn, 1)
+        wifi_layout.addLayout(wifi_btn_row)
+        vbox.addWidget(wifi_group)
+
+        self._wifi_refresh_timer = QTimer(self)
+        self._wifi_refresh_timer.setInterval(8000)
+        self._wifi_refresh_timer.timeout.connect(self.update_wifi_status)
+        
+        sync_group = QGroupBox("Database / Firebase")
+        sync_group.setFont(QFont("Arial", 12, QFont.Bold))
+        sync_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
+        sync_layout = QVBoxLayout(sync_group)
+        sync_layout.setSpacing(6)
+
+        self.sync_status_label = QLabel("Checking sync status...")
+        self.sync_status_label.setWordWrap(True)
+        self.sync_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        sync_layout.addWidget(self.sync_status_label)
+
+        btn_row_style = (
+            "QPushButton { font-size: 11px; padding: 6px 6px; border-radius: 6px; min-height: 34px; }"
+        )
+        sync_grid = QGridLayout()
+        sync_grid.setSpacing(6)
+
+        force_sync_btn = QPushButton("Force sync")
+        force_sync_btn.setStyleSheet(
+            btn_row_style + "QPushButton { background: #3498db; color: white; } "
+            "QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }"
+        )
+        force_sync_btn.clicked.connect(self.force_sync)
+        sync_grid.addWidget(force_sync_btn, 0, 0)
+
+        firebase_check_btn = QPushButton("Check Firebase")
         firebase_check_btn.setStyleSheet(
-            'QPushButton { background: #1f8b83; color: white; border-radius: 8px; padding: 6px 12px; } '
-            'QPushButton:hover { background: #1a756f; } QPushButton:pressed { background: #15635e; }'
+            btn_row_style + "QPushButton { background: #1f8b83; color: white; } "
+            "QPushButton:hover { background: #1a756f; } QPushButton:pressed { background: #15635e; }"
         )
         firebase_check_btn.clicked.connect(self.check_firebase_connection)
-        sync_layout.addWidget(firebase_check_btn)
+        sync_grid.addWidget(firebase_check_btn, 0, 1)
 
-        firebase_reconnect_btn = QPushButton('Reconnect to Firebase')
-        firebase_reconnect_btn.setFont(QFont('Arial', 12))
+        firebase_reconnect_btn = QPushButton("Reconnect")
         firebase_reconnect_btn.setStyleSheet(
-            'QPushButton { background: #16a085; color: white; border-radius: 8px; padding: 6px 12px; } '
-            'QPushButton:hover { background: #138d75; } QPushButton:pressed { background: #117a65; }'
+            btn_row_style + "QPushButton { background: #16a085; color: white; } "
+            "QPushButton:hover { background: #138d75; } QPushButton:pressed { background: #117a65; }"
         )
         firebase_reconnect_btn.clicked.connect(self.reconnect_firebase)
-        sync_layout.addWidget(firebase_reconnect_btn)
-        
-        # Check for updates button
-        check_updates_btn = QPushButton('Check for Updates')
-        check_updates_btn.setFont(QFont('Arial', 12))
-        check_updates_btn.setStyleSheet('QPushButton { background: #9b59b6; color: white; border-radius: 8px; padding: 6px 12px; } QPushButton:hover { background: #8e44ad; } QPushButton:pressed { background: #7d3c98; }')
+        sync_grid.addWidget(firebase_reconnect_btn, 1, 0)
+
+        check_updates_btn = QPushButton("Updates")
+        check_updates_btn.setStyleSheet(
+            btn_row_style + "QPushButton { background: #9b59b6; color: white; } "
+            "QPushButton:hover { background: #8e44ad; } QPushButton:pressed { background: #7d3c98; }"
+        )
         check_updates_btn.clicked.connect(self.check_for_updates)
-        sync_layout.addWidget(check_updates_btn)
-        
-        # Current version display
-        self.current_version_label = QLabel("Current Version: Checking...")
-        self.current_version_label.setStyleSheet("color: #666; font-size: 11px; margin: 5px 0;")
+        sync_grid.addWidget(check_updates_btn, 1, 1)
+
+        sync_layout.addLayout(sync_grid)
+
+        self.current_version_label = QLabel("Version: …")
+        self.current_version_label.setStyleSheet("color: #666; font-size: 10px;")
         sync_layout.addWidget(self.current_version_label)
-        
+
         vbox.addWidget(sync_group)
 
-        # Classroom Settings Section
-        classroom_group = QGroupBox("Classroom Settings")
-        classroom_group.setFont(QFont('Arial', 14, QFont.Bold))
-        classroom_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        classroom_group = QGroupBox("Classroom")
+        classroom_group.setFont(QFont("Arial", 12, QFont.Bold))
+        classroom_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
         classroom_layout = QVBoxLayout(classroom_group)
+        classroom_layout.setSpacing(6)
 
         self.classroom_status_label = QLabel("")
-        self.classroom_status_label.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 6px;")
+        self.classroom_status_label.setWordWrap(True)
+        self.classroom_status_label.setStyleSheet("color: #666; font-size: 10px;")
         classroom_layout.addWidget(self.classroom_status_label)
 
-        form_layout = QFormLayout()
-        form_layout.setLabelAlignment(Qt.AlignLeft)
-
+        # Stacked label + field (full width). QFormLayout side-by-side squeezes fields on 5" screens.
+        lbl_style = "font-size: 12px; color: #23405a; font-weight: bold; margin-top: 2px;"
         input_style = (
             "QLineEdit {"
-            " font-size: 20px;"
+            " font-size: 15px;"
             " font-weight: bold;"
             " color: #23405a;"
-            " padding: 14px;"
+            " padding: 8px 10px;"
             " border: 2px solid #2bb3a3;"
-            " border-radius: 14px;"
+            " border-radius: 8px;"
             " background: #f8fbfd;"
-            " min-height: 52px;"
+            " min-height: 40px;"
             "}"
             "QLineEdit:focus {"
             " border-color: #1f8b83;"
@@ -415,127 +731,140 @@ class SettingsOverlay(QWidget):
             "}"
         )
 
+        def _add_field_row(caption: str, line_edit: QLineEdit, placeholder: str):
+            cap = QLabel(caption)
+            cap.setStyleSheet(lbl_style)
+            cap.setWordWrap(True)
+            line_edit.setPlaceholderText(placeholder)
+            line_edit.setStyleSheet(input_style)
+            line_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            line_edit.setMinimumHeight(40)
+            classroom_layout.addWidget(cap)
+            classroom_layout.addWidget(line_edit)
+
         self.classroom_id_input = QLineEdit()
-        self.classroom_id_input.setPlaceholderText("e.g., 201, Library, Lab-A")
-        self.classroom_id_input.setStyleSheet(input_style)
-        form_layout.addRow("Classroom ID*", self.classroom_id_input)
+        _add_field_row("Classroom ID *", self.classroom_id_input, "e.g. 201, Library, Lab-A")
 
         self.classroom_label_input = QLineEdit()
-        self.classroom_label_input.setPlaceholderText("Optional display name (e.g., Mrs. Smith Homeroom)")
-        self.classroom_label_input.setStyleSheet(input_style)
-        form_layout.addRow("Display Name", self.classroom_label_input)
+        _add_field_row("Display name (optional)", self.classroom_label_input, "Shown on device / passes")
 
         self.teacher_name_input = QLineEdit()
-        self.teacher_name_input.setPlaceholderText("Teacher name for this device")
-        self.teacher_name_input.setStyleSheet(input_style)
-        form_layout.addRow("Teacher", self.teacher_name_input)
-
-        classroom_layout.addLayout(form_layout)
+        _add_field_row("Teacher", self.teacher_name_input, "Teacher for this device")
 
         classroom_buttons = QHBoxLayout()
-        classroom_buttons.setSpacing(12)
+        classroom_buttons.setSpacing(8)
 
         button_style_template = (
-            "QPushButton {{ background: {}; color: white; border-radius: 14px; padding: 14px 18px; font-size: 18px; }}"
+            "QPushButton {{ background: {}; color: white; border-radius: 8px; padding: 8px 12px; font-size: 13px; min-height: 40px; }}"
             "QPushButton:hover {{ background: {}; }}"
             "QPushButton:pressed {{ background: {}; }}"
         )
-        save_classroom_btn = QPushButton("Save Classroom Info")
-        save_classroom_btn.setMinimumHeight(58)
+        save_classroom_btn = QPushButton("Save")
         save_classroom_btn.setStyleSheet(button_style_template.format("#2bb3a3", "#249e90", "#1e857a"))
         save_classroom_btn.clicked.connect(self.save_classroom_settings)
-        classroom_buttons.addWidget(save_classroom_btn)
+        classroom_buttons.addWidget(save_classroom_btn, 1)
 
         reset_classroom_btn = QPushButton("Reset")
-        reset_classroom_btn.setMinimumHeight(58)
         reset_classroom_btn.setStyleSheet(
-            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 14px; padding: 14px 18px; font-size: 18px; } "
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 8px; padding: 8px 12px; font-size: 13px; min-height: 40px; } "
             "QPushButton:hover { background: #cccccc; } "
             "QPushButton:pressed { background: #bbbbbb; }"
         )
         reset_classroom_btn.clicked.connect(self.populate_classroom_fields)
-        classroom_buttons.addWidget(reset_classroom_btn)
+        classroom_buttons.addWidget(reset_classroom_btn, 1)
 
         classroom_layout.addLayout(classroom_buttons)
         vbox.addWidget(classroom_group)
-        
-        # Add New Student button
-        add_btn = QPushButton('Add New Student')
-        add_btn.setFont(QFont('Arial', 14, QFont.Bold))
-        add_btn.setStyleSheet('QPushButton { background: #2bb3a3; color: white; border-radius: 12px; padding: 10px 0; } QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }')
+
+        add_btn = QPushButton("Add student")
+        add_btn.setFont(QFont("Arial", 12, QFont.Bold))
+        add_btn.setMinimumHeight(38)
+        add_btn.setStyleSheet(
+            "QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 6px 0; } "
+            "QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }"
+        )
         add_btn.clicked.connect(self.show_add_student_dialog)
         vbox.addWidget(add_btn)
-        
-        # Student Management Section
-        student_mgmt_group = QGroupBox("Student Management")
-        student_mgmt_group.setFont(QFont('Arial', 14, QFont.Bold))
-        student_mgmt_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+
+        student_mgmt_group = QGroupBox("Breaks / visits")
+        student_mgmt_group.setFont(QFont("Arial", 12, QFont.Bold))
+        student_mgmt_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
         student_mgmt_layout = QVBoxLayout(student_mgmt_group)
-        
-        # End Active Breaks button
-        end_breaks_btn = QPushButton('End All Active Breaks')
-        end_breaks_btn.setFont(QFont('Arial', 12))
-        end_breaks_btn.setStyleSheet('QPushButton { background: #e67e22; color: white; border-radius: 8px; padding: 8px 12px; } QPushButton:hover { background: #d35400; } QPushButton:pressed { background: #a04000; }')
+        student_mgmt_layout.setSpacing(4)
+
+        end_breaks_btn = QPushButton("End all active breaks")
+        end_breaks_btn.setMinimumHeight(34)
+        end_breaks_btn.setStyleSheet(
+            "QPushButton { background: #e67e22; color: white; border-radius: 6px; padding: 6px 8px; font-size: 11px; } "
+            "QPushButton:hover { background: #d35400; } QPushButton:pressed { background: #a04000; }"
+        )
         end_breaks_btn.clicked.connect(self.end_all_active_breaks)
         student_mgmt_layout.addWidget(end_breaks_btn)
-        
-        # Status display for active breaks
-        self.active_breaks_label = QLabel("Checking for active breaks...")
-        self.active_breaks_label.setStyleSheet("color: #666; font-size: 11px; margin: 5px 0;")
-        student_mgmt_layout.addWidget(self.active_breaks_label)
-        
-        vbox.addWidget(student_mgmt_group)
-        
-        # App Control Section
-        app_control_group = QGroupBox("Application Control")
-        app_control_group.setFont(QFont('Arial', 14, QFont.Bold))
-        app_control_group.setStyleSheet("QGroupBox { font-weight: bold; border: 2px solid #23405a; border-radius: 8px; margin-top: 8px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
-        app_control_layout = QHBoxLayout(app_control_group)
-        
-        # Restart button
-        restart_btn = QPushButton('Restart App')
-        restart_btn.setFont(QFont('Arial', 14, QFont.Bold))
-        restart_btn.setStyleSheet('QPushButton { background: #f39c12; color: white; border-radius: 12px; padding: 8px 16px; } QPushButton:hover { background: #e67e22; } QPushButton:pressed { background: #d35400; }')
-        restart_btn.clicked.connect(self.restart_application)
-        app_control_layout.addWidget(restart_btn)
 
-        test_printer_btn = QPushButton('Test Printer')
-        test_printer_btn.setFont(QFont('Arial', 14, QFont.Bold))
+        self.active_breaks_label = QLabel("Checking for active breaks...")
+        self.active_breaks_label.setWordWrap(True)
+        self.active_breaks_label.setStyleSheet("color: #666; font-size: 10px;")
+        student_mgmt_layout.addWidget(self.active_breaks_label)
+
+        vbox.addWidget(student_mgmt_group)
+
+        app_control_group = QGroupBox("App")
+        app_control_group.setFont(QFont("Arial", 12, QFont.Bold))
+        app_control_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
+        app_grid = QGridLayout()
+        app_grid.setSpacing(6)
+
+        ac_style = (
+            "QPushButton { font-size: 11px; font-weight: bold; padding: 8px 4px; border-radius: 6px; min-height: 38px; }"
+        )
+        restart_btn = QPushButton("Restart")
+        restart_btn.setStyleSheet(
+            ac_style + "QPushButton { background: #f39c12; color: white; } "
+            "QPushButton:hover { background: #e67e22; } QPushButton:pressed { background: #d35400; }"
+        )
+        restart_btn.clicked.connect(self.restart_application)
+        app_grid.addWidget(restart_btn, 0, 0)
+
+        test_printer_btn = QPushButton("Test printer")
         test_printer_btn.setStyleSheet(
-            'QPushButton { background: #3498db; color: white; border-radius: 12px; padding: 8px 16px; } '
-            'QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }'
+            ac_style + "QPushButton { background: #3498db; color: white; } "
+            "QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }"
         )
         test_printer_btn.clicked.connect(self.run_printer_test)
-        app_control_layout.addWidget(test_printer_btn)
+        app_grid.addWidget(test_printer_btn, 0, 1)
 
-        reprint_btn = QPushButton('Reprint Last Pass')
-        reprint_btn.setFont(QFont('Arial', 14, QFont.Bold))
+        reprint_btn = QPushButton("Reprint pass")
         reprint_btn.setStyleSheet(
-            'QPushButton { background: #8e44ad; color: white; border-radius: 12px; padding: 8px 16px; } '
-            'QPushButton:hover { background: #7d3c98; } QPushButton:pressed { background: #6c3483; }'
+            ac_style + "QPushButton { background: #8e44ad; color: white; } "
+            "QPushButton:hover { background: #7d3c98; } QPushButton:pressed { background: #6c3483; }"
         )
         reprint_btn.clicked.connect(self.reprint_last_pass)
-        app_control_layout.addWidget(reprint_btn)
-        
-        # Quit button
-        quit_btn = QPushButton('Quit App')
-        quit_btn.setFont(QFont('Arial', 14, QFont.Bold))
-        quit_btn.setStyleSheet('QPushButton { background: #e74c3c; color: white; border-radius: 12px; padding: 8px 16px; } QPushButton:hover { background: #c0392b; } QPushButton:pressed { background: #a93226; }')
+        app_grid.addWidget(reprint_btn, 1, 0)
+
+        change_pin_btn = QPushButton("Change PIN")
+        change_pin_btn.setStyleSheet(
+            ac_style + "QPushButton { background: #1abc9c; color: white; } "
+            "QPushButton:hover { background: #16a085; } QPushButton:pressed { background: #0e6655; }"
+        )
+        change_pin_btn.clicked.connect(self.change_settings_pin)
+        app_grid.addWidget(change_pin_btn, 1, 1)
+
+        quit_btn = QPushButton("Quit")
+        quit_btn.setStyleSheet(
+            ac_style + "QPushButton { background: #e74c3c; color: white; } "
+            "QPushButton:hover { background: #c0392b; } QPushButton:pressed { background: #a93226; }"
+        )
         quit_btn.clicked.connect(self.quit_application)
-        app_control_layout.addWidget(quit_btn)
-        
+        app_grid.addWidget(quit_btn, 2, 0, 1, 2)
+
+        app_outer = QVBoxLayout(app_control_group)
+        app_outer.setSpacing(6)
+        app_outer.addLayout(app_grid)
+
         vbox.addWidget(app_control_group)
-        
-        # Close button
-        close_btn = QPushButton('Close Settings')
-        close_btn.setFont(QFont('Arial', 12))
-        close_btn.setStyleSheet('QPushButton { background: #95a5a6; color: white; border-radius: 8px; padding: 8px 12px; margin-top: 8px; } QPushButton:hover { background: #7f8c8d; } QPushButton:pressed { background: #6c7b7d; }')
-        close_btn.clicked.connect(lambda: self.setVisible(False))
-        vbox.addWidget(close_btn)
-        
-        # Set the container as the scroll area widget
+
         scroll_area.setWidget(container)
-        layout.addWidget(scroll_area)
+        root.addWidget(scroll_area, 1)
         
         # Update connection status
         self.update_connection_status()
@@ -734,11 +1063,11 @@ class SettingsOverlay(QWidget):
         try:
             if hasattr(self.parent, 'update_manager') and self.parent.update_manager:
                 version = self.parent.update_manager.current_version
-                self.current_version_label.setText(f"Current Version: {version}")
+                self.current_version_label.setText(f"App version: {version}")
             else:
-                self.current_version_label.setText("Current Version: Unknown")
+                self.current_version_label.setText("App version: unknown")
         except Exception as e:
-            self.current_version_label.setText("Current Version: Error")
+            self.current_version_label.setText("App version: error")
     
     def update_sync_status(self):
         """Update the sync status display"""
@@ -749,40 +1078,93 @@ class SettingsOverlay(QWidget):
             if status['last_sync']:
                 last_sync_text = status['last_sync'].strftime("%H:%M:%S")
             
-            status_text = f"Firebase Firestore: {'Connected' if status['firebase_connected'] else 'Disconnected'}\n"
-            status_text += f"Last Sync: {last_sync_text}\n"
-            status_text += f"Pending Changes: {status['pending_changes']}\n"
-            status_text += f"Sync Interval: {status['sync_interval_minutes']} minutes"
-            
+            fs = "Connected" if status["firebase_connected"] else "Disconnected"
+            status_text = (
+                f"Firestore: {fs}\n"
+                f"Last sync: {last_sync_text} · Pending: {status['pending_changes']}\n"
+                f"Check interval: {status['sync_interval_minutes']} min"
+            )
+
             self.sync_status_label.setText(status_text)
-            
-            # Color coding
-            if status['firebase_connected']:
-                if status['pending_changes'] == 0:
-                    color = "#27ae60"  # Green - all synced
-                else:
-                    color = "#f39c12"  # Orange - pending changes
+
+            if status["firebase_connected"]:
+                color = "#27ae60" if status["pending_changes"] == 0 else "#f39c12"
             else:
-                color = "#e74c3c"  # Red - disconnected
-            
-            self.sync_status_label.setStyleSheet(f"color: {color}; font-size: 12px; margin: 5px 0;")
-            
+                color = "#e74c3c"
+
+            self.sync_status_label.setStyleSheet(f"color: {color}; font-size: 11px; margin: 2px 0;")
+
         except Exception as e:
-            self.sync_status_label.setText(f"Error getting sync status: {str(e)}")
-            self.sync_status_label.setStyleSheet("color: #e74c3c; font-size: 12px; margin: 5px 0;")
+            self.sync_status_label.setText(f"Sync status error: {str(e)}")
+            self.sync_status_label.setStyleSheet("color: #e74c3c; font-size: 11px; margin: 2px 0;")
+
+    def update_wifi_status(self):
+        """Show Wi-Fi device / SSID / signal (nmcli on Raspberry Pi OS)."""
+        try:
+            info = get_wifi_info()
+        except Exception as e:
+            self.wifi_status_label.setText(f"Could not read Wi-Fi status: {e}")
+            self.wifi_status_label.setStyleSheet("color: #e74c3c; font-size: 12px; margin: 5px 0;")
+            return
+
+        dev = info.get("wifi_device") or "—"
+        nm = "available" if info.get("nmcli_available") else "not found"
+        lines = [f"nmcli: {nm} · interface: {dev}"]
+
+        if info.get("connected"):
+            ssid = info.get("ssid") or "?"
+            sig = info.get("signal_percent")
+            sig_txt = f"{sig}%" if sig is not None else "n/a"
+            lines.append(f"Connected · SSID: {ssid} · signal: {sig_txt}")
+            color = "#27ae60"
+        else:
+            st = info.get("state") or "unknown"
+            lines.append(f"Not connected · state: {st}")
+            color = "#e67e22"
+
+        det = (info.get("detail") or "").strip()
+        if det:
+            lines.append(det)
+
+        self.wifi_status_label.setText("\n".join(lines))
+        self.wifi_status_label.setStyleSheet(f"color: {color}; font-size: 12px; margin: 5px 0;")
+
+    def retry_wifi_now(self):
+        """Ask NetworkManager to turn Wi-Fi on and reconnect the interface."""
+        try:
+            ok, log = try_wifi_reconnect()
+            print(f"[SETTINGS] Wi-Fi retry:\n{log}")
+            self.update_wifi_status()
+            if hasattr(self.parent, "db") and hasattr(self.parent.db, "check_internet_connection"):
+                if self.parent.db.check_internet_connection(timeout=5):
+                    QMessageBox.information(
+                        self,
+                        "Wi-Fi",
+                        "Internet connectivity detected after retry.\n"
+                        "Database sync should follow within a few seconds.",
+                    )
+                    self.update_sync_status()
+                    return
+            QMessageBox.information(
+                self,
+                "Wi-Fi retry",
+                "Commands completed. Check the status lines above.\n\n"
+                "If nothing improves, confirm NetworkManager is running and this user "
+                "may run nmcli (or configure Polkit). Details were printed to the console.",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Wi-Fi", str(e))
     
     def update_active_breaks_status(self):
         """Update the active breaks status display"""
         try:
-            # Get active bathroom breaks, nurse visits, and water visits
-            active_breaks = self.get_active_breaks_info()
+            outings = self.get_active_breaks_info()
             
-            if not active_breaks:
+            if not outings:
                 self.active_breaks_label.setText("No active breaks or visits")
                 self.active_breaks_label.setStyleSheet("color: #27ae60; font-size: 11px; margin: 5px 0;")
             else:
-                break_text = f"Active: {len(active_breaks)} student(s) out"
-                self.active_breaks_label.setText(break_text)
+                self.active_breaks_label.setText(f"Active: {len(outings)} student(s) out")
                 self.active_breaks_label.setStyleSheet("color: #e67e22; font-size: 11px; margin: 5px 0;")
                 
         except Exception as e:
@@ -790,261 +1172,75 @@ class SettingsOverlay(QWidget):
             self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 11px; margin: 5px 0;")
     
     def get_active_breaks_info(self):
-        """Get information about active bathroom breaks, nurse visits, and water visits"""
-        active_breaks = []
-        classroom_id = getattr(self.parent.db, 'classroom_id', '') or ''
-        
+        """Get active outings via OnlineFirstDatabase (uses snapshot listeners when online -- zero Firestore reads)."""
         try:
-            # Check if it's an online-first database in online mode (using Firebase)
-            if hasattr(self.parent.db, 'mode') and self.parent.db.mode == "online" and hasattr(self.parent.db, 'firebase_db') and self.parent.db.firebase_db:
-                fb = self.parent.db.firebase_db.db
-                try:
-                    breaks_query = fb.collection('bathroom_breaks') \
-                        .where('break_end', '==', None) \
-                        .where('classroom_id', '==', classroom_id).get()
-                    
-                    for doc in breaks_query:
-                        data = doc.to_dict()
-                        active_breaks.append({
-                            'name': data.get('student_name', 'Unknown'),
-                            'type': 'bathroom',
-                            'start_time': data.get('break_start', ''),
-                            'uid': data.get('student_uid', '')
-                        })
-                    
-                    nurse_query = fb.collection('nurse_visits') \
-                        .where('visit_end', '==', None) \
-                        .where('classroom_id', '==', classroom_id).get()
-                    
-                    for doc in nurse_query:
-                        data = doc.to_dict()
-                        active_breaks.append({
-                            'name': data.get('student_name', 'Unknown'),
-                            'type': 'nurse',
-                            'start_time': data.get('visit_start', ''),
-                            'uid': data.get('student_uid', '')
-                        })
-                    
-                    water_query = fb.collection('water_visits') \
-                        .where('visit_end', '==', None) \
-                        .where('classroom_id', '==', classroom_id).get()
-                    
-                    for doc in water_query:
-                        data = doc.to_dict()
-                        active_breaks.append({
-                            'name': data.get('student_name', 'Unknown'),
-                            'type': 'water',
-                            'start_time': data.get('visit_start', ''),
-                            'uid': data.get('student_uid', '')
-                        })
-                except Exception as e:
-                    print(f"Error querying Firebase for active breaks: {e}")
-            
-            # Access the database connection properly for SQLite databases
-            elif hasattr(self.parent.db, 'conn') and self.parent.db.conn:
-                cursor = self.parent.db.conn.cursor()
-                
-                cursor.execute('''
-                    SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
-                    FROM bathroom_breaks b
-                    JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
-                    WHERE b.break_end IS NULL AND b.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-                
-                cursor.execute('''
-                    SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
-                    FROM nurse_visits n
-                    JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
-                    WHERE n.visit_end IS NULL AND n.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-                
-                cursor.execute('''
-                    SELECT s.name, 'water' as type, w.visit_start, w.student_uid
-                    FROM water_visits w
-                    JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
-                    WHERE w.visit_end IS NULL AND w.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-            
-            # If it's an online-first database in offline mode, try to access local_db
-            elif hasattr(self.parent.db, 'local_db') and self.parent.db.local_db and hasattr(self.parent.db.local_db, 'conn') and self.parent.db.local_db.conn:
-                cursor = self.parent.db.local_db.conn.cursor()
-                
-                cursor.execute('''
-                    SELECT s.name, 'bathroom' as type, b.break_start, b.student_uid
-                    FROM bathroom_breaks b
-                    JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
-                    WHERE b.break_end IS NULL AND b.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-                
-                cursor.execute('''
-                    SELECT s.name, 'nurse' as type, n.visit_start, n.student_uid
-                    FROM nurse_visits n
-                    JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
-                    WHERE n.visit_end IS NULL AND n.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-                
-                cursor.execute('''
-                    SELECT s.name, 'water' as type, w.visit_start, w.student_uid
-                    FROM water_visits w
-                    JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
-                    WHERE w.visit_end IS NULL AND w.classroom_id = ?
-                ''', (classroom_id,))
-                
-                for row in cursor.fetchall():
-                    active_breaks.append({
-                        'name': row[0],
-                        'type': row[1],
-                        'start_time': row[2],
-                        'uid': row[3]
-                    })
-            
+            return self.parent.db.get_active_outings()
         except Exception as e:
             print(f"Error getting active breaks info: {e}")
-            import traceback
-            traceback.print_exc()
-            
-        return active_breaks
+            return []
     
     def end_all_active_breaks(self):
         """End all active bathroom breaks, nurse visits, and water visits"""
         try:
-            # Get active breaks first
-            active_breaks = self.get_active_breaks_info()
-            
-            if not active_breaks:
+            outings = self.get_active_breaks_info()
+
+            if not outings:
                 QMessageBox.information(self, "No Active Breaks", "There are currently no active bathroom breaks, nurse visits, or water visits.")
                 return
-            
-            # Confirm action
-            break_list = []
-            for break_info in active_breaks:
-                type_label = break_info['type']
-                if type_label == 'bathroom':
-                    type_display = 'bathroom break'
-                elif type_label == 'nurse':
-                    type_display = 'nurse visit'
-                elif type_label == 'water':
-                    type_display = 'water visit'
-                else:
-                    type_display = type_label
-                break_list.append(f"• {break_info['name']} ({type_display})")
-            
-            break_text = "\\n".join(break_list)
-            
+
+            type_labels = {"Bathroom": "bathroom break", "Nurse": "nurse visit", "Water": "water visit"}
+            break_list = [f"• {o['student_name']} ({type_labels.get(o['type'], o['type'])})" for o in outings]
+            break_text = "\n".join(break_list)
+
             reply = QMessageBox.question(
-                self, 
-                "End Active Breaks", 
-                f"Are you sure you want to end all active breaks and visits?\\n\\n{break_text}",
+                self,
+                "End Active Breaks",
+                f"Are you sure you want to end all active breaks and visits?\n\n{break_text}",
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                QMessageBox.No,
             )
-            
+
             if reply == QMessageBox.Yes:
                 ended_count = 0
                 errors = []
-                
-                # End each active break
-                for break_info in active_breaks:
+
+                for outing in outings:
+                    uid = outing.get("student_uid", "")
+                    name = outing["student_name"]
+                    otype = outing["type"]
                     try:
-                        if break_info['type'] == 'bathroom':
-                            # End bathroom break using the stored UID
-                            success, message = self.parent.db.end_bathroom_break(break_info['uid'])
-                            if success:
-                                ended_count += 1
-                            else:
-                                errors.append(f"{break_info['name']} (bathroom): {message}")
-                        elif break_info['type'] == 'nurse':
-                            # End nurse visit using the stored UID
-                            # Check if the UID looks like an NFC UID or student ID
-                            uid = break_info['uid']
-                            if len(uid) > 10 or (uid.isalnum() and not uid.isdigit()):
-                                # Looks like NFC UID
-                                success, message = self.parent.db.end_nurse_visit(nfc_uid=uid)
-                            else:
-                                # Looks like student ID
-                                success, message = self.parent.db.end_nurse_visit(student_id=uid)
-                            if success:
-                                ended_count += 1
-                            else:
-                                errors.append(f"{break_info['name']} (nurse): {message}")
-                        elif break_info['type'] == 'water':
-                            # End water visit using the stored UID
-                            uid = break_info['uid']
-                            if len(uid) > 10 or (uid.isalnum() and not uid.isdigit()):
-                                # Looks like NFC UID
-                                success, message = self.parent.db.end_water_visit(nfc_uid=uid)
-                            else:
-                                # Looks like student ID
-                                success, message = self.parent.db.end_water_visit(student_id=uid)
-                            if success:
-                                ended_count += 1
-                            else:
-                                errors.append(f"{break_info['name']} (water): {message}")
+                        if otype == "Bathroom":
+                            success, message = self.parent.db.end_bathroom_break(uid)
+                        elif otype == "Nurse":
+                            success, message = self.parent.db.end_nurse_visit(nfc_uid=uid)
+                        elif otype == "Water":
+                            success, message = self.parent.db.end_water_visit(nfc_uid=uid)
+                        else:
+                            success, message = False, f"Unknown type: {otype}"
+                        if success:
+                            ended_count += 1
+                        else:
+                            errors.append(f"{name} ({otype}): {message}")
                     except Exception as e:
-                        error_msg = f"{break_info['name']} ({break_info['type']}): {str(e)}"
+                        error_msg = f"{name} ({otype}): {e}"
                         print(f"Error ending break for {error_msg}")
                         errors.append(error_msg)
-                
-                # Update status and show result
+
                 self.update_active_breaks_status()
-                self.parent.update_gpio_led_status()  # Update LED status
-                
+                self.parent.update_gpio_led_status()
+
                 if errors:
-                    error_text = "\\n".join(errors[:5])  # Show first 5 errors
+                    error_text = "\n".join(errors[:5])
                     if len(errors) > 5:
-                        error_text += f"\\n... and {len(errors) - 5} more errors"
+                        error_text += f"\n... and {len(errors) - 5} more errors"
                     QMessageBox.warning(
-                        self, 
-                        "Breaks Ended with Errors", 
-                        f"Successfully ended {ended_count} active break(s).\\n\\nErrors:\\n{error_text}"
+                        self,
+                        "Breaks Ended with Errors",
+                        f"Successfully ended {ended_count} active break(s).\n\nErrors:\n{error_text}",
                     )
                 else:
-                    QMessageBox.information(
-                        self, 
-                        "Breaks Ended", 
-                        f"Successfully ended {ended_count} active break(s)."
-                    )
-                
+                    QMessageBox.information(self, "Breaks Ended", f"Successfully ended {ended_count} active break(s).")
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error ending active breaks: {str(e)}")
             import traceback
@@ -1092,6 +1288,42 @@ class SettingsOverlay(QWidget):
         else:
             QMessageBox.warning(self, "Reprint", "Failed to reprint. Check the printer connection.")
 
+    def change_settings_pin(self):
+        """Two-step flow: enter new PIN, confirm it, then persist."""
+        from device_config import update_device_config
+
+        self._pin_change_overlay = PasswordOverlay(self)
+
+        def _step_enter(pin):
+            if len(pin) < 4:
+                self._pin_change_overlay._error_label.setText("PIN must be at least 4 digits")
+                self._pin_change_overlay._pin = ""
+                self._pin_change_overlay._update_dots()
+                return False
+            self._pending_new_pin = pin
+            self._pin_change_overlay.show_overlay(
+                title="Confirm New PIN",
+                submit_label="Confirm",
+                on_submit=_step_confirm,
+            )
+            return False
+
+        def _step_confirm(pin):
+            if pin == self._pending_new_pin:
+                update_device_config(settings_pin=pin)
+                QMessageBox.information(self, "PIN Changed", "Settings PIN has been updated.")
+                return True
+            self._pin_change_overlay._error_label.setText("PINs did not match — try again")
+            self._pin_change_overlay._pin = ""
+            self._pin_change_overlay._update_dots()
+            return False
+
+        self._pin_change_overlay.show_overlay(
+            title="Enter New PIN",
+            submit_label="Set PIN",
+            on_submit=_step_enter,
+        )
+
     def restart_application(self):
         """Restart the application"""
         reply = QMessageBox.question(self, 'Restart Application', 
@@ -1135,17 +1367,30 @@ class SettingsOverlay(QWidget):
         self.raise_()
         self.refresh_ports()
         self.update_connection_status()
+        self.update_wifi_status()
         self.update_sync_status()
         self.update_active_breaks_status()
         self.update_version_display()
+        if hasattr(self, "_wifi_refresh_timer"):
+            self._wifi_refresh_timer.start()
 
     def hideEvent(self, event):
+        if hasattr(self, "_wifi_refresh_timer"):
+            self._wifi_refresh_timer.stop()
         if hasattr(self, 'keyboard') and self.keyboard:
             self.keyboard.hide()
         super().hideEvent(event)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # self.parent is the main window (see __init__); do not call self.parent() —
+        # that name shadows QWidget.parent().
+        p = self.parent
+        if p is not None:
+            self.setGeometry(p.rect())
+
     def mousePressEvent(self, event):
-        # Dismiss if click outside the white box
+        # Dismiss if click outside the white panel (header + scroll)
         for child in self.children():
             if isinstance(child, QWidget) and child.geometry().contains(event.pos()):
                 return
@@ -1881,3 +2126,107 @@ class StudentSelectionOverlay(QWidget):
         """Clear the message"""
         self.message_label.hide()
         self.message_label.setText("")
+
+
+class BreakTypePickerOverlay(QWidget):
+    """Fullscreen overlay letting a student choose Bathroom, Nurse, or Water after tapping their card."""
+
+    break_selected = pyqtSignal(str, str, str)  # break_type, nfc_uid, student_id
+
+    _AUTO_DISMISS_MS = 10000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self._nfc_uid = ""
+        self._student_id = ""
+
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(0,0,0,0.6);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setVisible(False)
+        if parent:
+            self.setGeometry(parent.rect())
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+
+        container = QWidget()
+        container.setStyleSheet("background: white; border-radius: 24px;")
+        container.setFixedSize(480, 400)
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(32, 28, 32, 28)
+        vbox.setSpacing(16)
+
+        self.name_label = QLabel("")
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setFont(QFont("Arial", 22, QFont.Bold))
+        self.name_label.setStyleSheet("color: #23405a;")
+        vbox.addWidget(self.name_label)
+
+        subtitle = QLabel("Where are you going?")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(QFont("Arial", 16))
+        subtitle.setStyleSheet("color: #666;")
+        vbox.addWidget(subtitle)
+
+        vbox.addSpacing(8)
+
+        btn_data = [
+            ("Bathroom", "#2bb3a3", "#249e90"),
+            ("Nurse", "#23405a", "#1a3048"),
+            ("Water", "#3498db", "#2980b9"),
+        ]
+        for label, bg, bg_pressed in btn_data:
+            btn = QPushButton(label)
+            btn.setFont(QFont("Arial", 20, QFont.Bold))
+            btn.setMinimumHeight(64)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {bg}; color: white; border-radius: 16px; padding: 12px 0; }} "
+                f"QPushButton:hover {{ background: {bg_pressed}; }} "
+                f"QPushButton:pressed {{ background: {bg_pressed}; }}"
+            )
+            btn.clicked.connect(lambda _, t=label: self._on_selected(t))
+            vbox.addWidget(btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFont(QFont("Arial", 14))
+        cancel_btn.setMinimumHeight(40)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 12px; } "
+            "QPushButton:hover { background: #ccc; } QPushButton:pressed { background: #bbb; }"
+        )
+        cancel_btn.clicked.connect(self.hide)
+        vbox.addWidget(cancel_btn)
+
+        layout.addWidget(container)
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.hide)
+
+    def show_for_student(self, student_name: str, nfc_uid: str = "", student_id: str = ""):
+        """Show the picker for a specific student."""
+        self._nfc_uid = nfc_uid
+        self._student_id = student_id
+        self.name_label.setText(student_name or "Student")
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+        self.setVisible(True)
+        self.raise_()
+        self._dismiss_timer.start(self._AUTO_DISMISS_MS)
+
+    def _on_selected(self, break_type: str):
+        self._dismiss_timer.stop()
+        self.hide()
+        self.break_selected.emit(break_type, self._nfc_uid, self._student_id)
+
+    def mousePressEvent(self, event):
+        for child in self.children():
+            if isinstance(child, QWidget) and child.geometry().contains(event.pos()):
+                return
+        self.hide()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()

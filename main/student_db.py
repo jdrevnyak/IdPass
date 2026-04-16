@@ -217,7 +217,7 @@ class StudentDatabase:
         return None
     
     def get_identifier(self, nfc_uid=None, student_id=None):
-        """Return the identifier to use for attendance/breaks: NFC UID if present, else student_id."""
+        """Return the identifier to use for breaks/visits: NFC UID if present, else student_id."""
         if nfc_uid:
             return nfc_uid
         elif student_id:
@@ -225,54 +225,6 @@ class StudentDatabase:
         else:
             return None
 
-    def check_in(self, nfc_uid=None, student_id=None):
-        """Record student check-in using a consistent identifier."""
-        cursor = self.conn.cursor()
-        today = datetime.now().date()
-        current_time = datetime.now()
-        identifier = self.get_identifier(nfc_uid, student_id)
-        if not identifier:
-            return False, "No student identifier provided"
-        # Check if student exists
-        if nfc_uid:
-            student = self.get_student_by_uid(nfc_uid)
-        else:
-            student = self.get_student_by_student_id(student_id)
-        if not student:
-            return False, "Student not found in database"
-        # Check if already checked in
-        cursor.execute(
-            "SELECT id FROM attendance WHERE student_uid = ? AND date = ? AND classroom_id = ?",
-            (identifier, today, self.classroom_id)
-        )
-        if cursor.fetchone():
-            return False, "Already checked in today"
-        # Determine scheduled check-out time
-        _, period_end = get_period_for_time(current_time)
-        scheduled_check_out = None
-        if period_end:
-            scheduled_check_out = current_time.replace(hour=period_end.hour, minute=period_end.minute, second=0, microsecond=0)
-        try:
-            cursor.execute(
-                "INSERT INTO attendance (student_uid, classroom_id, date, check_in, scheduled_check_out) VALUES (?, ?, ?, ?, ?)",
-                (identifier, self.classroom_id, today, current_time, scheduled_check_out if scheduled_check_out else None)
-            )
-            self.conn.commit()
-            return True, "Checked in successfully"
-        except Exception as e:
-            return False, f"Error during check-in: {str(e)}"
-    
-    def is_checked_in(self, identifier):
-        """Check if student is checked in today by identifier (NFC UID or student_id)"""
-        cursor = self.conn.cursor()
-        today = datetime.now().date()
-        cursor.execute(
-            "SELECT id FROM attendance WHERE student_uid = ? AND date = ? AND classroom_id = ?",
-            (identifier, today, self.classroom_id)
-        )
-        result = cursor.fetchone()
-        return result is not None
-    
     def is_on_break(self, identifier):
         """Check if student is currently on a break by identifier (NFC UID or student_id)"""
         cursor = self.conn.cursor()
@@ -286,91 +238,8 @@ class StudentDatabase:
         result = cursor.fetchone()
         return result is not None
     
-    def get_today_attendance(self):
-        """Get today's attendance records"""
-        cursor = self.conn.cursor()
-        today = datetime.now().date()
-        
-        # Get all students and their attendance for today
-        cursor.execute('''
-        SELECT 
-            s.student_id,
-            s.name,
-            a.check_in,
-            a.check_out
-        FROM students s
-        LEFT JOIN attendance a ON s.student_id = a.student_id AND a.date = ?
-        ORDER BY s.name
-        ''', (today,))
-        
-        results = cursor.fetchall()
-        
-        # Convert string timestamps to datetime objects
-        processed_results = []
-        for student_id, name, check_in, check_out in results:
-            try:
-                # Try parsing with microseconds first
-                check_in_dt = datetime.strptime(check_in, "%Y-%m-%d %H:%M:%S.%f") if check_in else None
-                check_out_dt = datetime.strptime(check_out, "%Y-%m-%d %H:%M:%S.%f") if check_out else None
-            except ValueError:
-                try:
-                    # If that fails, try without microseconds
-                    check_in_dt = datetime.strptime(check_in, "%Y-%m-%d %H:%M:%S") if check_in else None
-                    check_out_dt = datetime.strptime(check_out, "%Y-%m-%d %H:%M:%S") if check_out else None
-                except (ValueError, TypeError) as e:
-                    print(f"Error processing timestamps for student {name}: {e}")
-                    check_in_dt = None
-                    check_out_dt = None
-            
-            processed_results.append((student_id, name, check_in_dt, check_out_dt))
-        
-        return processed_results
-    
-    def check_out(self, student_id):
-        """Record student check-out"""
-        cursor = self.conn.cursor()
-        today = datetime.now().date()
-        current_time = datetime.now()
-        
-        # Check if student is checked in
-        cursor.execute(
-            "SELECT id FROM attendance WHERE student_id = ? AND date = ? AND check_out IS NULL",
-            (student_id, today)
-        )
-        attendance = cursor.fetchone()
-        if not attendance:
-            return False, "Not checked in today"
-        
-        # Record check-out
-        cursor.execute(
-            "UPDATE attendance SET check_out = ? WHERE id = ?",
-            (current_time, attendance[0])
-        )
-        self.conn.commit()
-        return True, "Checked out successfully"
-    
     def start_bathroom_break(self, identifier):
         """Start a bathroom break for a student by identifier (NFC UID or student_id)"""
-        if not self.is_checked_in(identifier):
-            # Auto-check-in the student first
-            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
-            
-            # Determine if identifier is NFC UID or student ID
-            student_info = self.get_student_by_student_id(identifier)
-            if student_info:
-                # It's a student ID
-                check_in_result = self.check_in(student_id=identifier)
-            else:
-                # Try as NFC UID
-                student_info = self.get_student_by_uid(identifier)
-                if student_info:
-                    check_in_result = self.check_in(nfc_uid=identifier)
-                else:
-                    return False, "Student not found"
-            
-            if not check_in_result[0]:
-                return False, f"Auto-check-in failed: {check_in_result[1]}"
-            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if any student is currently on a break
@@ -553,40 +422,40 @@ class StudentDatabase:
                 return None
 
         cursor.execute("""
-            SELECT s.name, b.break_start
+            SELECT s.name, b.break_start, b.student_uid
             FROM bathroom_breaks b
             JOIN students s ON b.student_uid = s.id OR b.student_uid = s.student_id
             WHERE b.break_end IS NULL AND (b.classroom_id = ? OR b.classroom_id IS NULL OR b.classroom_id = '')
             ORDER BY b.break_start ASC
         """, (self.classroom_id,))
-        for name, start in cursor.fetchall():
+        for name, start, uid in cursor.fetchall():
             start_dt = parse_dt(start)
             if start_dt:
-                outings.append({'type': 'Bathroom', 'student_name': name, 'start': start_dt})
+                outings.append({'type': 'Bathroom', 'student_name': name, 'student_uid': uid or '', 'start': start_dt})
 
         cursor.execute("""
-            SELECT s.name, n.visit_start
+            SELECT s.name, n.visit_start, n.student_uid
             FROM nurse_visits n
             JOIN students s ON n.student_uid = s.id OR n.student_uid = s.student_id
             WHERE n.visit_end IS NULL AND (n.classroom_id = ? OR n.classroom_id IS NULL OR n.classroom_id = '')
             ORDER BY n.visit_start ASC
         """, (self.classroom_id,))
-        for name, start in cursor.fetchall():
+        for name, start, uid in cursor.fetchall():
             start_dt = parse_dt(start)
             if start_dt:
-                outings.append({'type': 'Nurse', 'student_name': name, 'start': start_dt})
+                outings.append({'type': 'Nurse', 'student_name': name, 'student_uid': uid or '', 'start': start_dt})
 
         cursor.execute("""
-            SELECT s.name, w.visit_start
+            SELECT s.name, w.visit_start, w.student_uid
             FROM water_visits w
             JOIN students s ON w.student_uid = s.id OR w.student_uid = s.student_id
             WHERE w.visit_end IS NULL AND (w.classroom_id = ? OR w.classroom_id IS NULL OR w.classroom_id = '')
             ORDER BY w.visit_start ASC
         """, (self.classroom_id,))
-        for name, start in cursor.fetchall():
+        for name, start, uid in cursor.fetchall():
             start_dt = parse_dt(start)
             if start_dt:
-                outings.append({'type': 'Water', 'student_name': name, 'start': start_dt})
+                outings.append({'type': 'Water', 'student_name': name, 'student_uid': uid or '', 'start': start_dt})
 
         outings.sort(key=lambda o: o['start'])
         return outings
@@ -686,21 +555,6 @@ class StudentDatabase:
     def start_nurse_visit(self, nfc_uid=None, student_id=None):
         """Start a nurse visit for a student by identifier (NFC UID or student_id)"""
         identifier = self.get_identifier(nfc_uid, student_id)
-        if not self.is_checked_in(identifier):
-            # Auto-check-in the student first
-            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
-            
-            # Use the provided parameters for check-in
-            if nfc_uid:
-                check_in_result = self.check_in(nfc_uid=nfc_uid)
-            elif student_id:
-                check_in_result = self.check_in(student_id=student_id)
-            else:
-                return False, "No student identifier provided"
-            
-            if not check_in_result[0]:
-                return False, f"Auto-check-in failed: {check_in_result[1]}"
-            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if this student has an active nurse visit
@@ -818,21 +672,6 @@ class StudentDatabase:
     def start_water_visit(self, nfc_uid=None, student_id=None):
         """Start a water fountain visit for a student by identifier (NFC UID or student_id)"""
         identifier = self.get_identifier(nfc_uid, student_id)
-        if not self.is_checked_in(identifier):
-            # Auto-check-in the student first
-            print(f"[DB] Student {identifier} not checked in, auto-checking in...")
-            
-            # Use the provided parameters for check-in
-            if nfc_uid:
-                check_in_result = self.check_in(nfc_uid=nfc_uid)
-            elif student_id:
-                check_in_result = self.check_in(student_id=student_id)
-            else:
-                return False, "No student identifier provided"
-            
-            if not check_in_result[0]:
-                return False, f"Auto-check-in failed: {check_in_result[1]}"
-            print(f"[DB] Auto-check-in successful")
         try:
             cursor = self.conn.cursor()
             # Check if this student has an active water visit
@@ -1028,26 +867,3 @@ class StudentDatabase:
             self.conn.rollback()
             print(f"[DB] auto_end_breaks_at_period_end: {e}")
     
-    def auto_checkout_students(self):
-        """Automatically check out students whose scheduled_check_out time has passed and check_out is NULL."""
-        cursor = self.conn.cursor()
-        now = datetime.now()
-        today = now.date()
-        cursor.execute(
-            "SELECT id, student_uid, scheduled_check_out FROM attendance WHERE date = ? AND check_out IS NULL AND scheduled_check_out IS NOT NULL AND classroom_id = ?",
-            (today, self.classroom_id)
-        )
-        rows = cursor.fetchall()
-        for row in rows:
-            att_id, student_uid, scheduled_str = row
-            try:
-                scheduled_dt = datetime.strptime(scheduled_str, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                continue
-            if scheduled_dt <= now:
-                cursor.execute(
-                    "UPDATE attendance SET check_out = ? WHERE id = ?",
-                    (now, att_id)
-                )
-        self.conn.commit()
-        self.auto_end_breaks_at_period_end()

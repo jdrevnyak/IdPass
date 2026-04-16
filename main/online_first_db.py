@@ -7,10 +7,16 @@ Syncs local changes to Firestore and clears local DB when connection is restored
 
 import sqlite3
 from datetime import datetime
+import sys
 import threading
 import time
 import socket
+from typing import Dict, List
 from student_db import StudentDatabase
+
+# Fallback polling TTL when snapshot listeners are not active (offline, or
+# transient startup window). With listeners running this path is not used.
+_POLLING_OUTING_CACHE_TTL_S = 60
 
 
 class TimeoutError(Exception):
@@ -70,12 +76,21 @@ class OnlineFirstDatabase:
         # Thread for checking connectivity
         self.check_thread = None
         self.check_active = True
+        # Poll faster while offline so Wi-Fi / Firebase recover sooner after outages.
+        self._offline_poll_interval = 10
+        self._last_wifi_stimulate = 0.0
+        self._wifi_stimulate_interval = 120
 
         # Polling throttle: cache results and gate write operations so
         # high-frequency GUI timers (1 s) don't hammer Firestore.
         self._cache = {}       # key -> (timestamp, result)
         self._throttle = {}    # key -> last_run_timestamp
-        
+
+        # Snapshot-listener state (replaces polling when online)
+        self._outing_snapshot_lock = threading.Lock()
+        self._outing_snapshot: List[Dict] = []
+        self._outing_listeners_active = False
+
         # Initialize system
         self.init_databases()
         self.start_connectivity_monitor()
@@ -118,6 +133,7 @@ class OnlineFirstDatabase:
             self.mode = "online"
             print("[ONLINE-FIRST] ✓ Online mode - Using Firebase Firestore as primary database")
             
+            self._start_outing_listeners()
             # Check if there's existing offline data that needs syncing
             self._check_and_sync_offline_data_on_startup()
             self.backfill_active_records()
@@ -171,6 +187,7 @@ class OnlineFirstDatabase:
 
     def update_classroom_context(self, classroom_context):
         """Update classroom metadata used for tagging/filtering records."""
+        old_classroom_id = self.classroom_id
         self.classroom_context = classroom_context or {}
         self.classroom_id = self.classroom_context.get('classroom_id', '')
         self.classroom_label = self.classroom_context.get('classroom_label', '')
@@ -186,6 +203,12 @@ class OnlineFirstDatabase:
         if self.local_db:
             self.local_db.set_classroom_id(self.classroom_id)
 
+        # Restart listeners when classroom changes so the filter matches.
+        if self.classroom_id != old_classroom_id and self._outing_listeners_active:
+            print(f"[ONLINE-FIRST] Classroom changed ({old_classroom_id!r} -> {self.classroom_id!r}), restarting outing listeners")
+            self._stop_outing_listeners()
+            self._start_outing_listeners()
+
     def backfill_active_records(self):
         """Backfill Firestore documents missing classroom metadata."""
         if self.firebase_db:
@@ -194,12 +217,34 @@ class OnlineFirstDatabase:
             except Exception as exc:
                 print(f"[ONLINE-FIRST] Backfill error: {exc}")
     
+    def _maybe_stimulate_wifi(self):
+        """When offline, periodically nudge NetworkManager to reconnect saved Wi-Fi."""
+        if sys.platform != "linux":
+            return
+        now = time.monotonic()
+        if now - self._last_wifi_stimulate < self._wifi_stimulate_interval:
+            return
+        self._last_wifi_stimulate = now
+        try:
+            from network_status import stimulate_wifi_light
+
+            stimulate_wifi_light()
+            print("[ONLINE-FIRST] Wi-Fi rescan / radio check (offline recovery nudge)")
+        except Exception as e:
+            print(f"[ONLINE-FIRST] Wi-Fi nudge failed: {e}")
+
     def _connectivity_worker(self):
         """Background worker that monitors connectivity and handles transitions"""
         print(f"[ONLINE-FIRST] Connectivity worker thread started")
         
         while self.check_active:
-            time.sleep(self.connectivity_check_interval)
+            # Shorter interval while offline so we notice recovery quickly after Wi-Fi returns.
+            interval = (
+                self._offline_poll_interval
+                if not self.is_online
+                else self.connectivity_check_interval
+            )
+            time.sleep(interval)
             
             if not self.check_active:
                 break
@@ -208,6 +253,9 @@ class OnlineFirstDatabase:
             was_online = self.is_online
             currently_online = self.check_internet_connection()
             print(f"[ONLINE-FIRST] Connectivity check result: currently_online={currently_online}")
+
+            if not currently_online:
+                self._maybe_stimulate_wifi()
             
             if was_online != currently_online:
                 self.is_online = currently_online
@@ -252,6 +300,7 @@ class OnlineFirstDatabase:
                 return
         
         self.mode = "online"
+        self._start_outing_listeners()
         self.backfill_active_records()
         
         # If we have local data, sync it to Firebase
@@ -260,8 +309,6 @@ class OnlineFirstDatabase:
             try:
                 # Check if there's any data to sync
                 cursor = self.local_db.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM attendance")
-                attendance_count = cursor.fetchone()[0]
                 cursor.execute("SELECT COUNT(*) FROM bathroom_breaks")
                 breaks_count = cursor.fetchone()[0]
                 cursor.execute("SELECT COUNT(*) FROM nurse_visits")
@@ -269,8 +316,8 @@ class OnlineFirstDatabase:
                 cursor.execute("SELECT COUNT(*) FROM water_visits")
                 water_count = cursor.fetchone()[0]
                 
-                if attendance_count > 0 or breaks_count > 0 or visits_count > 0 or water_count > 0:
-                    print(f"[ONLINE-FIRST] Found offline data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
+                if breaks_count > 0 or visits_count > 0 or water_count > 0:
+                    print(f"[ONLINE-FIRST] Found offline data: {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
                     print("[ONLINE-FIRST] Syncing local changes to Firebase...")
                     self._sync_local_to_firebase()
                     self._clear_local_database()
@@ -295,8 +342,6 @@ class OnlineFirstDatabase:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
             
-            cursor.execute("SELECT COUNT(*) FROM attendance WHERE 1")
-            attendance_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM bathroom_breaks WHERE 1")
             breaks_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM nurse_visits WHERE 1")
@@ -306,9 +351,9 @@ class OnlineFirstDatabase:
             
             conn.close()
             
-            if attendance_count > 0 or breaks_count > 0 or visits_count > 0 or water_count > 0:
-                print(f"[ONLINE-FIRST] 🔍 Found existing offline data on startup!")
-                print(f"[ONLINE-FIRST] Data: {attendance_count} attendance, {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
+            if breaks_count > 0 or visits_count > 0 or water_count > 0:
+                print(f"[ONLINE-FIRST] Found existing offline data on startup!")
+                print(f"[ONLINE-FIRST] Data: {breaks_count} breaks, {visits_count} visits, {water_count} water visits")
                 print("[ONLINE-FIRST] Initializing local DB to sync data...")
                 
                 # Initialize local DB to access the data
@@ -330,6 +375,7 @@ class OnlineFirstDatabase:
     def _transition_to_offline(self):
         """Handle transition from online to offline mode"""
         print("[ONLINE-FIRST] Transitioning to offline mode...")
+        self._stop_outing_listeners()
         self.mode = "offline"
         self.init_local_db()
         print("[ONLINE-FIRST] ✓ Offline mode active - using local database")
@@ -340,38 +386,6 @@ class OnlineFirstDatabase:
             return
         
         cursor = self.local_db.conn.cursor()
-        
-        # Sync attendance
-        cursor.execute("""
-            SELECT a.student_uid, s.name, a.date, a.check_in, a.check_out, a.scheduled_check_out, a.classroom_id
-            FROM attendance a
-            JOIN students s ON a.student_uid = s.id OR a.student_uid = s.student_id
-        """)
-        attendance_records = cursor.fetchall()
-        
-        for student_uid, student_name, date, check_in, check_out, scheduled_check_out, record_classroom_id in attendance_records:
-            classroom_id = record_classroom_id or self.classroom_id
-            # Convert timestamps to ISO format
-            check_in_iso = self._to_iso(check_in) if check_in else ''
-            check_out_iso = self._to_iso(check_out) if check_out else ''
-            scheduled_iso = self._to_iso(scheduled_check_out) if scheduled_check_out else ''
-            
-            attendance_data = {
-                'student_uid': student_uid,
-                'student_name': student_name,
-                'date': date,
-                'check_in': check_in_iso,
-                'check_out': check_out_iso,
-                'scheduled_check_out': scheduled_iso,
-                'classroom_id': classroom_id,
-                'classroom_label': self.classroom_label,
-                'teacher_name': self.teacher_name
-            }
-            
-            doc_id = f"{student_uid}_{date}_{classroom_id or 'default'}"
-            self.firebase_db.db.collection('attendance').document(doc_id).set(attendance_data)
-        
-        print(f"[ONLINE-FIRST] Synced {len(attendance_records)} attendance records")
         
         # Sync bathroom breaks
         cursor.execute("""
@@ -519,7 +533,6 @@ class OnlineFirstDatabase:
             return
         
         cursor = self.local_db.conn.cursor()
-        cursor.execute("DELETE FROM attendance")
         cursor.execute("DELETE FROM bathroom_breaks")
         cursor.execute("DELETE FROM nurse_visits")
         cursor.execute("DELETE FROM water_visits")
@@ -555,9 +568,46 @@ class OnlineFirstDatabase:
         return True
 
     def _invalidate_outing_caches(self):
-        """Drop cached outing data so the next read hits the database."""
+        """Drop cached outing data so the next polling read hits the database.
+        With listeners active this is mostly a no-op (listeners push updates)."""
         self._cache.pop("active_outings", None)
         self._cache.pop("has_students_out", None)
+
+    # ------------------------------------------------------------------
+    # Snapshot listeners (real-time, replaces polling when online)
+    # ------------------------------------------------------------------
+
+    def _start_outing_listeners(self):
+        """Attach on_snapshot listeners to Firebase for active outings."""
+        if not self.firebase_db:
+            return
+        try:
+            self.firebase_db.start_outing_listeners(
+                self.classroom_id, self._on_outing_snapshot
+            )
+            self._outing_listeners_active = True
+            print("[ONLINE-FIRST] Outing snapshot listeners started")
+        except Exception as exc:
+            print(f"[ONLINE-FIRST] Failed to start outing listeners: {exc}")
+            self._outing_listeners_active = False
+
+    def _stop_outing_listeners(self):
+        """Detach on_snapshot listeners."""
+        if self.firebase_db:
+            try:
+                self.firebase_db.stop_outing_listeners()
+            except Exception as exc:
+                print(f"[ONLINE-FIRST] Error stopping outing listeners: {exc}")
+        self._outing_listeners_active = False
+
+    def _on_outing_snapshot(self, outings: List[Dict]):
+        """Callback from Firebase on_snapshot (runs on a gRPC background thread)."""
+        with self._outing_snapshot_lock:
+            self._outing_snapshot = list(outings)
+        # Also push into the polling cache so has_students_out / auto_end_breaks
+        # see the freshest data without an extra Firestore round-trip.
+        self._cache["active_outings"] = (time.monotonic(), list(outings))
+        self._cache["has_students_out"] = (time.monotonic(), len(outings) > 0)
 
     # ------------------------------------------------------------------
     # Proxy methods - delegate to appropriate database
@@ -593,23 +643,6 @@ class OnlineFirstDatabase:
         if result is None and self.local_db:
             result = self.local_db.get_student_by_student_id(student_id)
         return result
-    
-    def check_in(self, nfc_uid=None, student_id=None):
-        """Check in a student"""
-        if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.check_in(nfc_uid, student_id)
-        elif self.mode == "offline" and self.local_db:
-            return self.local_db.check_in(nfc_uid, student_id)
-        else:
-            return False, "Database not available"
-    
-    def is_checked_in(self, identifier):
-        """Check if student is checked in"""
-        if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.is_checked_in(identifier)
-        elif self.mode == "offline" and self.local_db:
-            return self.local_db.is_checked_in(identifier)
-        return False
     
     def is_on_break(self, identifier):
         """Check if student is on bathroom break"""
@@ -702,14 +735,17 @@ class OnlineFirstDatabase:
         return result
     
     def has_students_out(self):
-        """Check if any students are out.  Cached until invalidated by a
-        start/end event so periodic timers never hit Firestore."""
-        return self._get_cached("has_students_out", 86400, self._fetch_has_students_out)
+        """Check if any students are currently out. Uses snapshot listeners when
+        online (zero Firestore reads), polling cache as fallback when offline."""
+        if self._outing_listeners_active:
+            with self._outing_snapshot_lock:
+                return len(self._outing_snapshot) > 0
+        return self._get_cached("has_students_out", _POLLING_OUTING_CACHE_TTL_S, self._fetch_has_students_out)
 
     def _fetch_has_students_out(self):
-        """Uncached check for students currently out."""
+        """Uncached check for students currently out (offline fallback)."""
         if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.has_students_out()
+            return len(self.get_active_outings()) > 0
         elif self.mode == "offline" and self.local_db:
             try:
                 cursor = self.local_db.conn.cursor()
@@ -747,23 +783,14 @@ class OnlineFirstDatabase:
             return self.firebase_db.get_periods()
         return []
     
-    def auto_checkout_students(self):
-        """Auto-checkout students at period end"""
-        if self.mode == "online" and self.firebase_db:
-            return self.firebase_db.auto_checkout_students()
-        elif self.mode == "offline" and self.local_db:
-            return self.local_db.auto_checkout_students()
-
     def auto_end_breaks_at_period_end(self):
         """End outings at period boundary.  Throttled to run at most once
         every 30 seconds so the 1-second GUI timer doesn't flood Firestore."""
         if not self._should_run("auto_end_breaks", 30):
             return
-        cached = self._cache.get("active_outings")
-        if cached is not None:
-            _, outings = cached
-            if not outings:
-                return
+        # Quick check: skip the Firestore write call when nobody is out.
+        if not self.get_active_outings():
+            return
         if self.mode == "online" and self.firebase_db:
             return self.firebase_db.auto_end_breaks_at_period_end()
         if self.local_db:
@@ -784,14 +811,16 @@ class OnlineFirstDatabase:
         return []
 
     def get_active_outings(self):
-        """Return active outings depending on current mode.  Cached until
-        invalidated by a start/end event so the 1-second prompt timer
-        never hits Firestore.  The elapsed-time display still ticks every
-        second because the GUI recomputes it from the cached start timestamp."""
-        return self._get_cached("active_outings", 86400, self._fetch_active_outings)
+        """Return active outings. When snapshot listeners are running (online) this
+        returns the in-memory list pushed by Firestore — zero reads. Falls back to
+        polling with a cache TTL when offline or listeners aren't active."""
+        if self._outing_listeners_active:
+            with self._outing_snapshot_lock:
+                return list(self._outing_snapshot)
+        return self._get_cached("active_outings", _POLLING_OUTING_CACHE_TTL_S, self._fetch_active_outings)
 
     def _fetch_active_outings(self):
-        """Uncached fetch of active outings from the current backend."""
+        """Polling fallback (used only when listeners are not active)."""
         if self.mode == "online" and self.firebase_db:
             try:
                 return self.firebase_db.get_active_outings()
@@ -824,15 +853,13 @@ class OnlineFirstDatabase:
             return 0
         try:
             cursor = self.local_db.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM attendance")
-            attendance_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM bathroom_breaks")
             breaks_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM nurse_visits")
             visits_count = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM water_visits")
             water_count = cursor.fetchone()[0]
-            return attendance_count + breaks_count + visits_count + water_count
+            return breaks_count + visits_count + water_count
         except Exception:
             return 0
 
@@ -892,6 +919,7 @@ class OnlineFirstDatabase:
     def cleanup(self):
         """Clean up resources"""
         self.check_active = False
+        self._stop_outing_listeners()
         if self.check_thread and self.check_thread.is_alive():
             self.check_thread.join(timeout=5)
         if self.local_db:

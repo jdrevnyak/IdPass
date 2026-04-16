@@ -2,14 +2,15 @@
 Firebase Firestore Database Module
 
 This module handles all data storage operations using Firebase Firestore.
-All data (students, attendance, breaks, nurse visits) is stored in Firestore.
+All data (students, breaks, nurse visits) is stored in Firestore.
 """
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, time
 import os
-from typing import Optional, Tuple, List, Dict
+import threading
+from typing import Callable, Optional, Tuple, List, Dict
 
 from student_db import (
     normalize_nfc_uid,
@@ -17,6 +18,9 @@ from student_db import (
     normalize_student_id_key,
     PERIODS,
 )
+
+
+_FF = firestore.FieldFilter
 
 
 class FirebaseDatabase:
@@ -30,6 +34,10 @@ class FirebaseDatabase:
         self.classroom_id = self.classroom_context.get('classroom_id', '')
         self.classroom_label = self.classroom_context.get('classroom_label', '')
         self.teacher_name = self.classroom_context.get('teacher_name', '')
+        self._outing_watchers: List = []
+        self._outing_listener_lock = threading.Lock()
+        self._outing_snapshots: Dict[str, List[Dict]] = {}
+        self._outing_listener_callback: Optional[Callable] = None
         self.init_connection()
         self.load_periods()  # Load periods from Firestore on init
 
@@ -53,33 +61,22 @@ class FirebaseDatabase:
         return self.classroom_id or ''
 
     def backfill_active_records(self):
-        """Add classroom metadata to today's/active documents that are missing it."""
+        """Add classroom metadata to active outing documents that are missing it."""
         if not self.classroom_id:
             print("[FIREBASE] Classroom ID not configured - skipping backfill")
             return
 
         try:
             metadata = self._classroom_metadata()
-            today = datetime.now().date().isoformat()
             updated = {
-                'attendance': 0,
                 'bathroom_breaks': 0,
                 'nurse_visits': 0,
                 'water_visits': 0
             }
 
-            attendance_ref = self.db.collection('attendance')
-            today_docs = attendance_ref.where('date', '==', today).get()
-            for doc in today_docs:
-                data = doc.to_dict()
-                if data.get('classroom_id'):
-                    continue
-                doc.reference.update(metadata)
-                updated['attendance'] += 1
-
             def _backfill_active(collection_name, end_field):
                 collection_ref = self.db.collection(collection_name)
-                active_docs = collection_ref.where(end_field, '==', None).get()
+                active_docs = collection_ref.where(filter=_FF(end_field, '==', None)).get()
                 for doc in active_docs:
                     data = doc.to_dict()
                     if data.get('classroom_id'):
@@ -189,7 +186,7 @@ class FirebaseDatabase:
                     return False
             
             # Check if student_id already exists
-            query = students_ref.where('student_id', '==', student_id).limit(1).get()
+            query = students_ref.where(filter=_FF('student_id', '==', student_id)).limit(1).get()
             if len(list(query)) > 0:
                 return False
             
@@ -242,7 +239,7 @@ class FirebaseDatabase:
                     if row:
                         return row
             for uid in variants:
-                query = students_ref.where("nfc_uid", "==", uid).limit(1).get()
+                query = students_ref.where(filter=_FF("nfc_uid", "==", uid)).limit(1).get()
                 for doc in query:
                     row = self._student_row_from_doc(doc)
                     if row:
@@ -258,7 +255,7 @@ class FirebaseDatabase:
             students_ref = self.db.collection("students")
             sid_key = normalize_student_id_key(student_id)
             for val in student_id_firestore_values(student_id):
-                query = students_ref.where("student_id", "==", val).limit(1).get()
+                query = students_ref.where(filter=_FF("student_id", "==", val)).limit(1).get()
                 for doc in query:
                     row = self._student_row_from_doc(doc)
                     if row:
@@ -306,122 +303,15 @@ class FirebaseDatabase:
             print(f"[FIREBASE] Error getting student name: {e}")
             return "Unknown Student"
     
-    def _resolve_auto_check_in(self, identifier: str) -> Tuple[bool, str]:
-        """Choose NFC vs school-ID check-in from DB lookups (not string length)."""
-        if not identifier:
-            return False, "No student identifier provided"
-        if identifier.startswith("TEST"):
-            return self.check_in(nfc_uid=identifier)
-        norm_sid = normalize_student_id_key(identifier)
-        if norm_sid and self.get_student_by_student_id(norm_sid):
-            return self.check_in(student_id=norm_sid)
-        if self.get_student_by_uid(identifier):
-            return self.check_in(nfc_uid=identifier)
-        return False, "Student not found for auto-check-in"
-
-    def check_in(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
-        """Record student check-in"""
-        try:
-            identifier = self.get_identifier(nfc_uid, student_id)
-            if not identifier:
-                return False, "No student identifier provided"
-
-            # Resolve student using the same normalized values as get_identifier
-            student_info = None
-            if nfc_uid is not None:
-                nu = normalize_nfc_uid(nfc_uid)
-                if nu:
-                    student_info = self.get_student_by_uid(nu)
-                elif student_id is not None:
-                    student_info = self.get_student_by_student_id(
-                        normalize_student_id_key(student_id)
-                    )
-            elif student_id is not None:
-                student_info = self.get_student_by_student_id(
-                    normalize_student_id_key(student_id)
-                )
-
-            if not student_info:
-                return False, "Student not found in database"
-            
-            # Check if already checked in today
-            today = datetime.now().date().isoformat()
-            attendance_ref = self.db.collection('attendance')
-            query = (
-                attendance_ref
-                .where('student_uid', '==', identifier)
-                .where('date', '==', today)
-                .where('classroom_id', '==', self._classroom_id_value())
-                .limit(1)
-                .get()
-            )
-            
-            if len(list(query)) > 0:
-                return False, "Already checked in today"
-            
-            # Determine scheduled check-out time
-            current_time = datetime.now()
-            _, period_end = self.get_period_for_time(current_time)
-            scheduled_check_out = None
-            if period_end:
-                scheduled_check_out = current_time.replace(
-                    hour=period_end.hour, 
-                    minute=period_end.minute, 
-                    second=0, 
-                    microsecond=0
-                ).isoformat()
-            
-            # Get student name
-            student_name = self.get_student_name(identifier)
-            
-            # Add attendance record
-            attendance_data = {
-                'student_uid': identifier,
-                'student_name': student_name,
-                'date': today,
-                'check_in': current_time.isoformat(),
-                'check_out': '',
-                'scheduled_check_out': scheduled_check_out or ''
-            }
-            attendance_data.update(self._classroom_metadata())
-            
-            attendance_ref.add(attendance_data)
-            
-            return True, "Checked in successfully"
-            
-        except Exception as e:
-            print(f"[FIREBASE] Error during check-in: {e}")
-            return False, f"Error during check-in: {str(e)}"
-    
-    def is_checked_in(self, identifier: str) -> bool:
-        """Check if student is checked in today"""
-        try:
-            today = datetime.now().date().isoformat()
-            attendance_ref = self.db.collection('attendance')
-            query = (
-                attendance_ref
-                .where('student_uid', '==', identifier)
-                .where('date', '==', today)
-                .where('classroom_id', '==', self._classroom_id_value())
-                .limit(1)
-                .get()
-            )
-            
-            return len(list(query)) > 0
-            
-        except Exception as e:
-            print(f"[FIREBASE] Error checking if checked in: {e}")
-            return False
-    
     def is_on_break(self, identifier: str) -> bool:
         """Check if student is currently on a bathroom break"""
         try:
             breaks_ref = self.db.collection('bathroom_breaks')
             query = (
                 breaks_ref
-                .where('student_uid', '==', identifier)
-                .where('break_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('break_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -435,14 +325,6 @@ class FirebaseDatabase:
     def start_bathroom_break(self, identifier: str) -> Tuple[bool, str]:
         """Start a bathroom break for a student"""
         try:
-            if not self.is_checked_in(identifier):
-                # Auto-check-in the student first
-                print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
-                success, message = self._resolve_auto_check_in(identifier)
-                if not success:
-                    return False, f"Auto-check-in failed: {message}"
-                print(f"[FIREBASE] Auto-check-in successful: {message}")
-            
             # Check if this student has an active break - if so, end it
             if self.is_on_break(identifier):
                 print(f"[FIREBASE] Student {identifier} is already on a break, ending current break...")
@@ -457,8 +339,8 @@ class FirebaseDatabase:
             breaks_ref = self.db.collection('bathroom_breaks')
             query = (
                 breaks_ref
-                .where('break_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('break_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
             
@@ -496,9 +378,9 @@ class FirebaseDatabase:
             breaks_ref = self.db.collection('bathroom_breaks')
             query = (
                 breaks_ref
-                .where('student_uid', '==', identifier)
-                .where('break_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('break_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
             
@@ -530,9 +412,9 @@ class FirebaseDatabase:
             nurse_ref = self.db.collection('nurse_visits')
             query = (
                 nurse_ref
-                .where('student_uid', '==', identifier)
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -550,8 +432,8 @@ class FirebaseDatabase:
             breaks_ref = self.db.collection('bathroom_breaks')
             breaks_query = (
                 breaks_ref
-                .where('break_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('break_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -563,8 +445,8 @@ class FirebaseDatabase:
             nurse_ref = self.db.collection('nurse_visits')
             nurse_query = (
                 nurse_ref
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -576,8 +458,8 @@ class FirebaseDatabase:
             water_ref = self.db.collection('water_visits')
             water_query = (
                 water_ref
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -595,7 +477,7 @@ class FirebaseDatabase:
         """Get list of students who don't have an NFC UID assigned"""
         try:
             students_ref = self.db.collection('students')
-            query = students_ref.where('nfc_uid', '==', '').get()
+            query = students_ref.where(filter=_FF('nfc_uid', '==', '')).get()
             
             unassigned_students = []
             for i, doc in enumerate(query):
@@ -620,8 +502,8 @@ class FirebaseDatabase:
             collection_ref = self.db.collection(collection_name)
             query = (
                 collection_ref
-                .where(end_field, '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF(end_field, '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
             for doc in query:
@@ -636,7 +518,8 @@ class FirebaseDatabase:
                 outings.append({
                     'type': outing_type,
                     'student_name': data.get('student_name', 'Unknown'),
-                    'start': start_dt
+                    'student_uid': data.get('student_uid', ''),
+                    'start': start_dt,
                 })
 
         _collect('bathroom_breaks', 'break_end', 'Bathroom', 'break_start')
@@ -645,14 +528,102 @@ class FirebaseDatabase:
 
         outings.sort(key=lambda o: o['start'])
         return outings
-    
+
+    # ------------------------------------------------------------------
+    # Real-time outing listeners (on_snapshot)
+    # ------------------------------------------------------------------
+
+    def start_outing_listeners(self, classroom_id: str, callback: Callable[[List[Dict]], None]):
+        """Start 3 on_snapshot listeners for active outings in this classroom.
+
+        *callback* receives a merged, sorted list of active outings every time any
+        of the three collections changes.  The callback is invoked from a
+        background gRPC thread; callers must handle thread safety.
+        """
+        self.stop_outing_listeners()
+
+        self._outing_listener_callback = callback
+        self._outing_snapshots = {
+            "bathroom_breaks": [],
+            "nurse_visits": [],
+            "water_visits": [],
+        }
+
+        specs = [
+            ("bathroom_breaks", "break_end",  "Bathroom", "break_start"),
+            ("nurse_visits",    "visit_end",  "Nurse",    "visit_start"),
+            ("water_visits",    "visit_end",  "Water",    "visit_start"),
+        ]
+
+        for collection_name, end_field, outing_type, time_field in specs:
+            query = (
+                self.db.collection(collection_name)
+                .where(filter=_FF(end_field, "==", None))
+                .where(filter=_FF("classroom_id", "==", classroom_id or ""))
+            )
+
+            def _make_handler(col_name, o_type, t_field):
+                def _on_snapshot(query_snapshot, changes, read_time):
+                    entries = []
+                    for doc in query_snapshot:
+                        data = doc.to_dict()
+                        start_str = data.get(t_field)
+                        if not start_str:
+                            continue
+                        try:
+                            start_dt = datetime.fromisoformat(start_str)
+                        except Exception:
+                            continue
+                        entries.append({
+                            "type": o_type,
+                            "student_name": data.get("student_name", "Unknown"),
+                            "student_uid": data.get("student_uid", ""),
+                            "start": start_dt,
+                        })
+                    with self._outing_listener_lock:
+                        self._outing_snapshots[col_name] = entries
+                        merged = self._merge_outing_snapshots()
+                    if self._outing_listener_callback is not None:
+                        try:
+                            self._outing_listener_callback(merged)
+                        except Exception as exc:
+                            print(f"[FIREBASE] Outing listener callback error: {exc}")
+                return _on_snapshot
+            handler = _make_handler(collection_name, outing_type, time_field)
+            watcher = query.on_snapshot(handler)
+            self._outing_watchers.append(watcher)
+
+        print(f"[FIREBASE] Started 3 outing listeners for classroom '{classroom_id}'")
+
+    def stop_outing_listeners(self):
+        """Unsubscribe all active outing snapshot listeners."""
+        for watcher in self._outing_watchers:
+            try:
+                watcher.unsubscribe()
+            except Exception as exc:
+                print(f"[FIREBASE] Error unsubscribing outing listener: {exc}")
+        if self._outing_watchers:
+            print(f"[FIREBASE] Stopped {len(self._outing_watchers)} outing listener(s)")
+        self._outing_watchers.clear()
+        self._outing_listener_callback = None
+
+    def _merge_outing_snapshots(self) -> List[Dict]:
+        """Merge per-collection snapshots into one sorted list.
+
+        Caller must hold ``_outing_listener_lock``."""
+        merged: List[Dict] = []
+        for entries in self._outing_snapshots.values():
+            merged.extend(entries)
+        merged.sort(key=lambda o: o["start"])
+        return merged
+
     def link_nfc_card_to_student(self, nfc_uid: str, student_id: str) -> Tuple[bool, str]:
         """Link an NFC card UID to a student"""
         try:
             students_ref = self.db.collection('students')
             query_docs = []
             for val in student_id_firestore_values(student_id):
-                query_docs = list(students_ref.where("student_id", "==", val).limit(1).get())
+                query_docs = list(students_ref.where(filter=_FF("student_id", "==", val)).limit(1).get())
                 if query_docs:
                     break
 
@@ -688,14 +659,6 @@ class FirebaseDatabase:
         """Start a nurse visit for a student"""
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
-            if not self.is_checked_in(identifier):
-                # Auto-check-in the student first
-                print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
-                success, message = self._resolve_auto_check_in(identifier)
-                if not success:
-                    return False, f"Auto-check-in failed: {message}"
-                print(f"[FIREBASE] Auto-check-in successful: {message}")
-            
             # Check if this student has an active nurse visit - if so, end it
             if self.is_at_nurse(identifier):
                 print(f"[FIREBASE] Student {identifier} is already at nurse, ending current visit...")
@@ -734,9 +697,9 @@ class FirebaseDatabase:
             nurse_ref = self.db.collection('nurse_visits')
             query = (
                 nurse_ref
-                .where('student_uid', '==', identifier)
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
             
@@ -768,9 +731,9 @@ class FirebaseDatabase:
             water_ref = self.db.collection('water_visits')
             query = (
                 water_ref
-                .where('student_uid', '==', identifier)
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .limit(1)
                 .get()
             )
@@ -785,14 +748,6 @@ class FirebaseDatabase:
         """Start a water fountain visit for a student"""
         try:
             identifier = self.get_identifier(nfc_uid, student_id)
-            if not self.is_checked_in(identifier):
-                # Auto-check-in the student first
-                print(f"[FIREBASE] Student {identifier} not checked in, auto-checking in...")
-                success, message = self._resolve_auto_check_in(identifier)
-                if not success:
-                    return False, f"Auto-check-in failed: {message}"
-                print(f"[FIREBASE] Auto-check-in successful: {message}")
-            
             # Check if this student has an active water visit - if so, end it
             if self.is_at_water(identifier):
                 print(f"[FIREBASE] Student {identifier} is already at water fountain, ending current visit...")
@@ -831,9 +786,9 @@ class FirebaseDatabase:
             water_ref = self.db.collection('water_visits')
             query = (
                 water_ref
-                .where('student_uid', '==', identifier)
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
             
@@ -859,62 +814,13 @@ class FirebaseDatabase:
             print(f"[FIREBASE] Error ending water visit: {e}")
             return False, str(e)
     
-    def get_today_attendance(self) -> List[Tuple]:
-        """Get today's attendance records"""
-        try:
-            today = datetime.now().date().isoformat()
-            
-            # Get all students
-            students = {}
-            students_ref = self.db.collection('students').get()
-            for doc in students_ref:
-                data = doc.to_dict()
-                students[doc.id] = {
-                    'student_id': data['student_id'],
-                    'name': data['name']
-                }
-            
-            # Get today's attendance
-            attendance_ref = self.db.collection('attendance')
-            query = (
-                attendance_ref
-                .where('date', '==', today)
-                .where('classroom_id', '==', self._classroom_id_value())
-                .get()
-            )
-            
-            attendance_map = {}
-            for doc in query:
-                data = doc.to_dict()
-                student_uid = data['student_uid']
-                attendance_map[student_uid] = {
-                    'check_in': datetime.fromisoformat(data['check_in']) if data.get('check_in') else None,
-                    'check_out': datetime.fromisoformat(data['check_out']) if data.get('check_out') else None
-                }
-            
-            # Build results
-            results = []
-            for uid, student_data in students.items():
-                student_id = student_data['student_id']
-                name = student_data['name']
-                attendance = attendance_map.get(uid, {})
-                check_in = attendance.get('check_in')
-                check_out = attendance.get('check_out')
-                results.append((student_id, name, check_in, check_out))
-            
-            return results
-            
-        except Exception as e:
-            print(f"[FIREBASE] Error getting today's attendance: {e}")
-            return []
-    
     def get_today_breaks(self) -> List[Tuple]:
         """Get all bathroom breaks for today"""
         try:
             today = datetime.now().date().isoformat()
             
             breaks_ref = self.db.collection('bathroom_breaks')
-            all_breaks = breaks_ref.where('classroom_id', '==', self._classroom_id_value()).get()
+            all_breaks = breaks_ref.where(filter=_FF('classroom_id', '==', self._classroom_id_value())).get()
             
             results = []
             for doc in all_breaks:
@@ -939,8 +845,8 @@ class FirebaseDatabase:
             breaks_ref = self.db.collection("bathroom_breaks")
             breaks_query = (
                 breaks_ref
-                .where("break_end", "==", None)
-                .where("classroom_id", "==", self._classroom_id_value())
+                .where(filter=_FF("break_end", "==", None))
+                .where(filter=_FF("classroom_id", "==", self._classroom_id_value()))
                 .get()
             )
             results = []
@@ -960,7 +866,7 @@ class FirebaseDatabase:
             today = datetime.now().date().isoformat()
             
             nurse_ref = self.db.collection('nurse_visits')
-            all_visits = nurse_ref.where('classroom_id', '==', self._classroom_id_value()).get()
+            all_visits = nurse_ref.where(filter=_FF('classroom_id', '==', self._classroom_id_value())).get()
             
             results = []
             for doc in all_visits:
@@ -979,43 +885,8 @@ class FirebaseDatabase:
             print(f"[FIREBASE] Error getting today's nurse visits: {e}")
             return []
     
-    def auto_checkout_students(self):
-        """Automatically check out students whose scheduled_check_out time has passed and end active breaks/visits at period end"""
-        try:
-            now = datetime.now()
-            today = now.date().isoformat()
-
-            attendance_ref = self.db.collection('attendance')
-            query = (
-                attendance_ref
-                .where('date', '==', today)
-                .where('check_out', '==', '')
-                .where('classroom_id', '==', self._classroom_id_value())
-                .get()
-            )
-
-            for doc in query:
-                data = doc.to_dict()
-                scheduled_check_out = data.get('scheduled_check_out')
-
-                if scheduled_check_out:
-                    try:
-                        scheduled_dt = datetime.fromisoformat(scheduled_check_out)
-                        if scheduled_dt <= now:
-                            doc.reference.update({'check_out': now.isoformat()})
-                            print(f"[FIREBASE] Auto-checked out student: {data['student_uid']}")
-                    except Exception as e:
-                        print(f"[FIREBASE] Error processing scheduled checkout for {data['student_uid']}: {e}")
-                        continue
-
-            # Also auto-end bathroom breaks, nurse visits, and water visits at period end
-            self._auto_end_breaks_and_visits_at_period_end()
-
-        except Exception as e:
-            print(f"[FIREBASE] Error in auto-checkout: {e}")
-
     def auto_end_breaks_at_period_end(self):
-        """End active outings whose period has ended (same logic as auto_checkout_students). For frequent UI polling."""
+        """End active outings whose period has ended."""
         self._auto_end_breaks_and_visits_at_period_end()
 
     def _auto_end_breaks_and_visits_at_period_end(self):
@@ -1030,8 +901,8 @@ class FirebaseDatabase:
             breaks_ref = self.db.collection('bathroom_breaks')
             breaks_query = (
                 breaks_ref
-                .where('break_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('break_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
 
@@ -1067,8 +938,8 @@ class FirebaseDatabase:
             nurse_ref = self.db.collection('nurse_visits')
             nurse_query = (
                 nurse_ref
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
 
@@ -1104,8 +975,8 @@ class FirebaseDatabase:
             water_ref = self.db.collection('water_visits')
             water_query = (
                 water_ref
-                .where('visit_end', '==', None)
-                .where('classroom_id', '==', self._classroom_id_value())
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
                 .get()
             )
 

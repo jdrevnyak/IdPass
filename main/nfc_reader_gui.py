@@ -30,7 +30,8 @@ from online_first_db import OnlineFirstDatabase
 from widgets import AnalogClock, StatusIndicator
 from dialogs import AddStudentDialog, ImportDialog
 from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay, 
-                     NurseOverlay, WaterOverlay, AddStudentOverlay, StudentSelectionOverlay)
+                     NurseOverlay, WaterOverlay, AddStudentOverlay, StudentSelectionOverlay,
+                     BreakTypePickerOverlay, PasswordOverlay)
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
 from printer import ThermalPrinter
@@ -38,7 +39,7 @@ from student_db import normalize_nfc_uid, normalize_student_id_key, PERIODS
 
 
 class NFCReaderGUI(QMainWindow):
-    """Main application window for the NFC Reader student attendance system."""
+    """Main application window for the NFC Reader hall-pass system."""
     
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
@@ -55,7 +56,7 @@ class NFCReaderGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Student Attendance System")
+        self.setWindowTitle("Student Hall Pass System")
         
         # Set up full screen mode
         self.showFullScreen()
@@ -216,13 +217,6 @@ class NFCReaderGUI(QMainWindow):
         
         # Current student ID
         self.current_student_id = None
-        
-        # Auto-checkout on startup
-        self.db.auto_checkout_students()
-        # Periodic auto-checkout every minute
-        self.auto_checkout_timer = QTimer(self)
-        self.auto_checkout_timer.timeout.connect(self.db.auto_checkout_students)
-        self.auto_checkout_timer.start(300 * 1000)  # every 5 minutes
 
         # Auto-end breaks during passing periods
         self._last_period = None
@@ -232,11 +226,9 @@ class NFCReaderGUI(QMainWindow):
         self.keypad_overlay = KeypadOverlay(self)
         self.analog_clock.mousePressEvent = self.show_keypad_overlay
         self.settings_overlay = SettingsOverlay(self)
+        self.password_overlay = PasswordOverlay(self)
+        self.password_overlay.authenticated.connect(self._show_settings_overlay)
         self.header.installEventFilter(self)
-        self._header_press_time = None
-        self._header_timer = QTimer(self)
-        self._header_timer.setSingleShot(True)
-        self._header_timer.timeout.connect(self._show_settings_overlay)
         self.bathroom_mode = False
         self.break_start_button.clicked.connect(self.show_bathroom_overlay)
         self.bathroom_overlay = BathroomOverlay(self)
@@ -266,6 +258,10 @@ class NFCReaderGUI(QMainWindow):
         
         # Connect the card linking success signal
         self.student_selection_overlay.card_linked.connect(self.handle_card_linked)
+
+        # Break-type picker overlay (shown on NFC tap / manual entry)
+        self.break_picker_overlay = BreakTypePickerOverlay(self)
+        self.break_picker_overlay.break_selected.connect(self._on_break_type_selected)
         
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
@@ -646,7 +642,7 @@ class NFCReaderGUI(QMainWindow):
         self.keypad_overlay.show_overlay()
 
     def handle_manual_id_entry(self, student_id):
-        """Handle manual ID entry from keypad"""
+        """Handle manual ID entry from keypad -- show break-type picker."""
         student_id = normalize_student_id_key(student_id)
         if not student_id:
             self.show_prompt_message("Enter a student ID.")
@@ -655,24 +651,16 @@ class NFCReaderGUI(QMainWindow):
         if result:
             nfc_uid, student_name = result
             print(f"[DEBUG] Manual entry resolved student_id {student_id} to nfc_uid {nfc_uid}")
-            success, message = self.db.check_in(nfc_uid=nfc_uid if nfc_uid else None, student_id=student_id if not nfc_uid else None)
-            if success:
-                self.show_prompt_message(f"Student: {student_name}\n(ID: {student_id}) checked in.")
-            else:
-                self.show_prompt_message(message)
+            self.break_picker_overlay.show_for_student(
+                student_name, nfc_uid=nfc_uid or "", student_id=student_id
+            )
         else:
             self.show_prompt_message(f"No student found with ID: {student_id}")
 
     def eventFilter(self, obj, event):
-        """Event filter for long press on header and ghost-touch guard on visit buttons."""
-        if obj == self.header:
-            if event.type() == event.MouseButtonPress:
-                self._header_press_time = datetime.now()
-                self._header_timer.start(5000)
-            elif event.type() == event.MouseButtonRelease:
-                self._header_timer.stop()
-            elif event.type() == event.Leave:
-                self._header_timer.stop()
+        """Event filter for header tap (PIN gate) and ghost-touch guard on visit buttons."""
+        if obj == self.header and event.type() == event.MouseButtonRelease:
+            self.password_overlay.show_overlay()
         if obj in self._button_press_times and event.type() == event.MouseButtonPress:
             self._button_press_times[obj] = datetime.now()
         return super().eventFilter(obj, event)
@@ -759,7 +747,6 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.prompt.setText(message)
         else:
-            # Let start_bathroom_break handle auto-check-in
             success, message = self.db.start_bathroom_break(identifier)
             if success:
                 self.prompt.setText("Bathroom break started!")
@@ -819,7 +806,6 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.prompt.setText(message)
         else:
-            # Let start_nurse_visit handle auto-check-in
             success, message = self.db.start_nurse_visit(nfc_uid=nfc_uid, student_id=student_id)
             if success:
                 self.prompt.setText("Nurse visit started!")
@@ -878,7 +864,6 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.prompt.setText(message)
         else:
-            # Let start_water_visit handle auto-check-in
             success, message = self.db.start_water_visit(nfc_uid=nfc_uid, student_id=student_id)
             if success:
                 self.prompt.setText("Water visit started!")
@@ -957,21 +942,21 @@ class NFCReaderGUI(QMainWindow):
                             print(f"[DEBUG] Processing water entry with UID: {uid}")
                             self.water_overlay.process_card(uid)
                             return
+
+                        # Dismiss an open break picker before processing new tap
+                        if self.break_picker_overlay.isVisible():
+                            self.break_picker_overlay.hide()
                         
-                        # Normal check-in process
-                        print(f"[DEBUG] Processing normal check-in with UID: {uid}")
+                        # Show break-type picker for the student
+                        print(f"[DEBUG] Processing NFC tap with UID: {uid}")
                         self.current_student_id = uid
                         result = self.db.get_student_by_uid(uid)
                         if result:
                             student_id, student_name = result
                             print(f"[DEBUG] Found student: {student_name} (ID: {student_id})")
-                            success, message = self.db.check_in(nfc_uid=uid)
-                            if success:
-                                print(f"[DEBUG] Check-in successful for {student_name}")
-                                self.show_prompt_message(f"Student: {student_name}\n(ID: {student_id}) checked in.")
-                            else:
-                                print(f"[DEBUG] Check-in failed: {message}")
-                                self.show_prompt_message(message)
+                            self.break_picker_overlay.show_for_student(
+                                student_name, nfc_uid=uid, student_id=student_id
+                            )
                         else:
                             print(f"[DEBUG] Unknown student with UID: {uid}")
                             self.show_prompt_message(f"Unknown Card (UID: {uid})\nChecking for students to link...")
@@ -1019,21 +1004,83 @@ class NFCReaderGUI(QMainWindow):
         else:
             self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
     
+    def _on_break_type_selected(self, break_type, nfc_uid, student_id):
+        """Route the break-type picker selection to the appropriate process method."""
+        kwargs = {}
+        if nfc_uid:
+            kwargs["nfc_uid"] = nfc_uid
+        if student_id:
+            kwargs["student_id"] = student_id
+
+        if break_type == "Bathroom":
+            self.process_bathroom_entry(**kwargs)
+        elif break_type == "Nurse":
+            self.process_nurse_entry(**kwargs)
+        elif break_type == "Water":
+            self.process_water_entry(**kwargs)
+
     def handle_card_linked(self, nfc_uid, student_name):
-        """Handle successful card linking by automatically checking in the student"""
-        print(f"[DEBUG] Card {nfc_uid} linked to {student_name}, attempting auto check-in")
-        
-        # Try to check in the student with the newly linked card
-        success, message = self.db.check_in(nfc_uid=nfc_uid)
-        if success:
-            self.show_prompt_message(f"Card linked to {student_name}\nStudent checked in successfully!")
-        else:
-            self.show_prompt_message(f"Card linked to {student_name}\nCheck-in: {message}")
+        """Handle successful card linking."""
+        print(f"[DEBUG] Card {nfc_uid} linked to {student_name}")
+        self.show_prompt_message(f"Card linked to {student_name}\nTap again to start a pass.")
+
+
+def _apply_app_dialog_palette(app):
+    """Ensure message boxes and dialogs stay readable (dark text on light ground).
+
+    Semi-transparent overlay parents can confuse palette inheritance on some platforms,
+    producing black-on-black QMessageBox text."""
+    app.setStyleSheet(
+        """
+        QMessageBox {
+            background-color: #ffffff;
+            color: #23405a;
+        }
+        QMessageBox QLabel {
+            color: #23405a;
+            background-color: #ffffff;
+        }
+        QMessageBox QPushButton {
+            background-color: #2bb3a3;
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 18px;
+            min-width: 80px;
+            font-weight: bold;
+        }
+        QMessageBox QPushButton:hover {
+            background-color: #249e90;
+        }
+        QMessageBox QPushButton:pressed {
+            background-color: #1e857a;
+        }
+        QMessageBox QDialogButtonBox {
+            background-color: #f5f7fa;
+        }
+        QDialog {
+            background-color: #ffffff;
+            color: #23405a;
+        }
+        QDialog QLabel {
+            color: #23405a;
+            background-color: transparent;
+        }
+        QProgressDialog {
+            background-color: #ffffff;
+            color: #23405a;
+        }
+        QProgressDialog QLabel {
+            color: #23405a;
+        }
+        """
+    )
 
 
 def main():
     """Main entry point for the application"""
     app = QApplication(sys.argv)
+    _apply_app_dialog_palette(app)
     window = NFCReaderGUI()
     window.show()
 

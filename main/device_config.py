@@ -10,6 +10,7 @@ DEFAULT_CONFIG = {
     "classroom_id": "",
     "classroom_label": "",
     "teacher_name": "",
+    "settings_pin": "1234",
 }
 
 CONFIG_FILENAME = "device_config.json"
