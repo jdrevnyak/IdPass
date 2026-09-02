@@ -2,13 +2,15 @@ import qrcode
 from PIL import Image
 from datetime import datetime
 import io
+import time
 
 try:
     from escpos.printer import Usb
+    import usb.core
     PRINTER_LIB_AVAILABLE = True
 except ImportError:
     PRINTER_LIB_AVAILABLE = False
-    print("[WARNING] python-escpos not installed. Printing disabled.")
+    print("[WARNING] python-escpos or pyusb not installed. Printing disabled.")
 
 class ThermalPrinter:
     def __init__(self, vendor_id=0x0416, product_id=0x5011, profile="TM-T88II"):
@@ -34,22 +36,57 @@ class ThermalPrinter:
             print(f"[PRINTER] Error while closing printer handle: {e}")
         self.printer = None
 
+    def _detach_kernel_driver(self):
+        """Find the raw USB device and detach the kernel driver (e.g. usblp) if active."""
+        try:
+            dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
+            if dev is None:
+                return False
+            if dev.is_kernel_driver_active(0):
+                dev.detach_kernel_driver(0)
+                print("[PRINTER] Detached kernel driver from interface 0")
+            return True
+        except NotImplementedError:
+            # detach_kernel_driver is Linux-only; safe to ignore on other platforms
+            return True
+        except Exception as e:
+            print(f"[PRINTER] Could not detach kernel driver: {e}")
+            return True
+
     def _connect(self):
         if not PRINTER_LIB_AVAILABLE:
             return
 
         self._disconnect()
 
-        try:
-            # Attempt to find the printer
-            # Explicitly set endpoints for POS58/0416:5011 printer
-            # IN: 0x81 (129), OUT: 0x03 (3)
-            self.printer = Usb(self.vendor_id, self.product_id, profile=self.profile, in_ep=0x81, out_ep=0x03)
-            print(f"[PRINTER] Connected to printer {hex(self.vendor_id)}:{hex(self.product_id)}")
-        except Exception as e:
-            # Only print error if we really tried and failed, to avoid spamming logs if just not present
-            print(f"[PRINTER] Connection failed: {e}")
-            self.printer = None
+        for attempt in range(2):
+            try:
+                dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
+                if dev is None:
+                    print(f"[PRINTER] Device not found (attempt {attempt + 1}/2)")
+                    if attempt == 0:
+                        time.sleep(1)
+                        continue
+                    return
+
+                self._detach_kernel_driver()
+
+                self.printer = Usb(
+                    self.vendor_id, self.product_id,
+                    profile=self.profile, in_ep=0x81, out_ep=0x03,
+                )
+                print(f"[PRINTER] Connected to {hex(self.vendor_id)}:{hex(self.product_id)} (attempt {attempt + 1}/2)")
+                return
+            except usb.core.USBError as e:
+                print(f"[PRINTER] USB error (attempt {attempt + 1}/2): {e}")
+                self.printer = None
+                if attempt == 0:
+                    time.sleep(1)
+            except Exception as e:
+                print(f"[PRINTER] Connection failed (attempt {attempt + 1}/2): {e}")
+                self.printer = None
+                if attempt == 0:
+                    time.sleep(1)
 
     def reconnect(self):
         """Drop any existing USB session and open a fresh connection."""

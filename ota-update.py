@@ -40,7 +40,6 @@ class OTAUpdateManager:
         self.preserve_files = [
             'student_attendance.db',
             'firebase-service-account.json',
-            'requirements.txt',
             'main.py',  # Critical launcher file
             'version.txt'  # Version tracking file
         ]
@@ -217,24 +216,31 @@ class OTAUpdateManager:
                     'autostart_nfc.sh',
                     'nfc_reader.service',
                     'nfc-reader-user.service',
+                    'requirements.txt',
                     '.gitignore'
+                ]
+                infrastructure_dirs = [
+                    'setup',
                 ]
                 
                 for item in source_dir.iterdir():
-                    # Only process infrastructure files from root
-                    if item.name in infrastructure_files:
-                        dest_path = self.project_root / item.name
-                        try:
-                            if item.is_file():
-                                # Check if different before copying
-                                if self._files_are_different(item, dest_path):
-                                    shutil.copy2(item, dest_path)
-                                    root_files_updated += 1
-                                    self.logger(f"Updated infrastructure: {item.name}")
-                                else:
-                                    self.logger(f"Skipped (unchanged): {item.name}")
-                        except Exception as e:
-                            self.logger(f"Error updating infrastructure {item.name}: {e}", "ERROR")
+                    dest_path = self.project_root / item.name
+                    try:
+                        if item.is_file() and item.name in infrastructure_files:
+                            if self._files_are_different(item, dest_path):
+                                shutil.copy2(item, dest_path)
+                                root_files_updated += 1
+                                self.logger(f"Updated infrastructure: {item.name}")
+                            else:
+                                self.logger(f"Skipped (unchanged): {item.name}")
+                        elif item.is_dir() and item.name in infrastructure_dirs:
+                            if dest_path.exists():
+                                shutil.rmtree(dest_path)
+                            shutil.copytree(item, dest_path)
+                            root_files_updated += 1
+                            self.logger(f"Updated infrastructure dir: {item.name}/")
+                    except Exception as e:
+                        self.logger(f"Error updating infrastructure {item.name}: {e}", "ERROR")
                 
                 self.logger(f"Staged {files_copied} files for main/, updated {root_files_updated} infrastructure files")
                 

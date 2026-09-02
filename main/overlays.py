@@ -849,13 +849,21 @@ class SettingsOverlay(QWidget):
         change_pin_btn.clicked.connect(self.change_settings_pin)
         app_grid.addWidget(change_pin_btn, 1, 1)
 
+        install_printer_btn = QPushButton("Install printer")
+        install_printer_btn.setStyleSheet(
+            ac_style + "QPushButton { background: #27ae60; color: white; } "
+            "QPushButton:hover { background: #229954; } QPushButton:pressed { background: #1e8449; }"
+        )
+        install_printer_btn.clicked.connect(self.install_printer_rule)
+        app_grid.addWidget(install_printer_btn, 2, 0)
+
         quit_btn = QPushButton("Quit")
         quit_btn.setStyleSheet(
             ac_style + "QPushButton { background: #e74c3c; color: white; } "
             "QPushButton:hover { background: #c0392b; } QPushButton:pressed { background: #a93226; }"
         )
         quit_btn.clicked.connect(self.quit_application)
-        app_grid.addWidget(quit_btn, 2, 0, 1, 2)
+        app_grid.addWidget(quit_btn, 2, 1)
 
         app_outer = QVBoxLayout(app_control_group)
         app_outer.setSpacing(6)
@@ -1273,6 +1281,38 @@ class SettingsOverlay(QWidget):
                 "Printer Test",
                 "Could not connect or print. Check the USB cable and power, then try again.",
             )
+
+    def install_printer_rule(self):
+        """Install the udev rule for the thermal printer so it works without root."""
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "setup", "install_printer.sh")
+        script = os.path.normpath(script)
+
+        if not os.path.isfile(script):
+            QMessageBox.warning(self, "Install Printer", f"Setup script not found:\n{script}")
+            return
+
+        try:
+            result = subprocess.run(
+                ["sudo", "bash", script],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                QMessageBox.information(
+                    self,
+                    "Install Printer",
+                    "Printer USB rule installed.\n\nUnplug and re-plug the printer, then restart the app.",
+                )
+            else:
+                detail = (result.stderr or result.stdout).strip()
+                QMessageBox.warning(
+                    self,
+                    "Install Printer",
+                    f"Script exited with code {result.returncode}.\n\n{detail}",
+                )
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "Install Printer", "The install script timed out.")
+        except Exception as e:
+            QMessageBox.critical(self, "Install Printer", f"Error running install script:\n{e}")
 
     def reprint_last_pass(self):
         """Reprint the most recently printed hall pass."""
