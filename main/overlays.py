@@ -11,7 +11,7 @@ import threading
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QComboBox, QPushButton, QMessageBox, QLineEdit,
                             QFormLayout, QGroupBox, QGridLayout, QSizePolicy, QApplication,
-                            QScrollArea, QScroller, QFrame)
+                            QScrollArea, QScroller, QFrame, QDialog, QTextEdit)
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
 
@@ -483,6 +483,7 @@ class SettingsOverlay(QWidget):
     """Overlay for application settings including ESP32 connection."""
 
     printer_test_finished = pyqtSignal(object, object)
+    printer_diag_finished = pyqtSignal(object, object)
 
     # Compact 5" / 800×480-friendly group box chrome
     _SETTINGS_GROUP_STYLE = (
@@ -500,6 +501,7 @@ class SettingsOverlay(QWidget):
         self.setGeometry(parent.rect())
         self.parent = parent
         self.printer_test_finished.connect(self._printer_test_finished)
+        self.printer_diag_finished.connect(self._printer_diag_finished)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -835,6 +837,16 @@ class SettingsOverlay(QWidget):
         self.printer_status_label.setWordWrap(True)
         self.printer_status_label.setStyleSheet("color: #666; font-size: 14px;")
         printer_layout.addWidget(self.printer_status_label)
+        diagnose_printer_btn = QPushButton("Diagnose printer")
+        self.diagnose_printer_btn = diagnose_printer_btn
+        diagnose_printer_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        diagnose_printer_btn.setMinimumHeight(48)
+        diagnose_printer_btn.setStyleSheet(
+            "QPushButton { background: #34495e; color: white; border-radius: 6px; padding: 8px 4px; } "
+            "QPushButton:hover { background: #2c3e50; } QPushButton:pressed { background: #1b2631; }"
+        )
+        diagnose_printer_btn.clicked.connect(self.run_printer_diagnostics)
+        printer_layout.addWidget(diagnose_printer_btn)
         vbox.addWidget(printer_group)
 
         app_control_group = QGroupBox("App")
@@ -1399,6 +1411,114 @@ class SettingsOverlay(QWidget):
                 "Pick the 0416:5011 thermal printer in the USB list, tap Refresh after plugging it in, "
                 "then try Test printer again. A reboot is not required.",
             )
+
+    def run_printer_diagnostics(self):
+        """Run printer path checks and show the report on-screen (no keyboard needed)."""
+        if getattr(self, "_printer_diag_busy", False):
+            return
+
+        self._printer_diag_busy = True
+        if hasattr(self, "diagnose_printer_btn"):
+            self.diagnose_printer_btn.setEnabled(False)
+            self.diagnose_printer_btn.setText("Diagnosing…")
+        if hasattr(self, "printer_status_label"):
+            self.printer_status_label.setText("Running printer diagnostics… this can take ~20 seconds.")
+
+        def work():
+            try:
+                from diagnose_printer import run_diagnostics
+                report, results = run_diagnostics()
+                self.printer_diag_finished.emit(report, results)
+            except Exception as e:
+                self.printer_diag_finished.emit(None, e)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _printer_diag_finished(self, report, extra):
+        self._printer_diag_busy = False
+        if hasattr(self, "diagnose_printer_btn"):
+            self.diagnose_printer_btn.setEnabled(True)
+            self.diagnose_printer_btn.setText("Diagnose printer")
+
+        if report is None:
+            if hasattr(self, "printer_status_label"):
+                self.printer_status_label.setText(f"Diagnostics failed: {extra}")
+            QMessageBox.critical(self, "Printer Diagnose", f"Diagnostics failed:\n{extra}")
+            return
+
+        results = extra if isinstance(extra, dict) else {}
+        works = [name for name, ok in results.items() if ok]
+        if hasattr(self, "printer_status_label"):
+            if works:
+                self.printer_status_label.setText("Diagnostics: " + ", ".join(works) + " WORKS.")
+            else:
+                self.printer_status_label.setText("Diagnostics: no write path succeeded. See the report.")
+
+        saved = self._save_printer_diag_report(report)
+        if saved:
+            report = report.rstrip() + f"\n\nReport also saved to:\n{saved}\n"
+        self._show_printer_diag_dialog(report)
+
+    def _save_printer_diag_report(self, report):
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(here, "..", "printer_diag.txt"),
+            os.path.join(here, "printer_diag.txt"),
+        ]
+        for path in candidates:
+            path = os.path.normpath(path)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(report)
+                return path
+            except Exception:
+                continue
+        return None
+
+    def _show_printer_diag_dialog(self, report):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Printer diagnostics")
+        dlg.setModal(True)
+        parent = self.parent if isinstance(self.parent, QWidget) else self
+        if parent is not None:
+            geo = parent.geometry()
+            dlg.resize(max(360, geo.width() - 24), max(280, geo.height() - 24))
+        else:
+            dlg.resize(760, 440)
+        dlg.setStyleSheet("QDialog { background: #ffffff; color: #23405a; }")
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        hint = QLabel("Scroll the report, then tap Close. A successful path will also print a short test slip.")
+        hint.setWordWrap(True)
+        hint.setFont(QFont("Arial", 13))
+        hint.setStyleSheet("color: #23405a;")
+        layout.addWidget(hint)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(report)
+        text.setFont(QFont("Monospace", 11))
+        text.setStyleSheet(
+            "QTextEdit { background: #f4f6f8; color: #1a1a1a; border: 1px solid #c5d0da; "
+            "border-radius: 6px; padding: 8px; }"
+        )
+        QScroller.grabGesture(text.viewport(), QScroller.LeftMouseButtonGesture)
+        layout.addWidget(text, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setMinimumHeight(52)
+        close_btn.setFont(QFont("Arial", 16, QFont.Bold))
+        close_btn.setStyleSheet(
+            "QPushButton { background: #2bb3a3; color: white; border: none; border-radius: 8px; } "
+            "QPushButton:pressed { background: #1e857a; }"
+        )
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+
+        dlg.exec_()
 
     def _printer_setup_script_path(self):
         """Locate install_printer.sh in OTA (main/setup) or repo-root (setup/) layouts."""
