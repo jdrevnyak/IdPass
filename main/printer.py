@@ -23,28 +23,22 @@ def _usb_device_label(dev):
     pid = int(dev.idProduct)
     bus = getattr(dev, "bus", None)
     addr = getattr(dev, "address", None)
-    product = ""
-    manufacturer = ""
-    try:
-        product = (usb.util.get_string(dev, dev.iProduct) or "").strip()
-    except Exception:
-        pass
-    try:
-        manufacturer = (usb.util.get_string(dev, dev.iManufacturer) or "").strip()
-    except Exception:
-        pass
-    name = product or manufacturer or "USB device"
     loc = f"{bus}:{addr}" if bus is not None and addr is not None else "?"
-    return f"{loc}  {vid:04x}:{pid:04x}  {name}"
+    extra = "  thermal printer" if vid == DEFAULT_VENDOR_ID and pid == DEFAULT_PRODUCT_ID else ""
+    return f"{loc}  {vid:04x}:{pid:04x}{extra}"
 
 
 def list_usb_devices():
-    """Return USB devices the user can pick (skips hubs)."""
+    """Return USB devices the user can pick (skips hubs).
+
+    Do not read USB string descriptors here — get_string() can claim the
+    interface and leave the printer busy for python-escpos.
+    """
     if not PRINTER_LIB_AVAILABLE:
         return []
     devices = []
     try:
-        found = usb.core.find(find_all=True) or []
+        found = list(usb.core.find(find_all=True) or [])
     except Exception as e:
         print(f"[PRINTER] USB scan failed: {e}")
         return []
@@ -67,6 +61,11 @@ def list_usb_devices():
             })
         except Exception as e:
             print(f"[PRINTER] Skipping USB device: {e}")
+        finally:
+            try:
+                usb.util.dispose_resources(dev)
+            except Exception:
+                pass
     devices.sort(key=lambda d: (not d["likely_printer"], d["label"]))
     return devices
 
@@ -110,6 +109,7 @@ class ThermalPrinter:
         self.profile = profile
         self.printer = None
         self.last_pass_params = None
+        self.last_error = ""
         # libusb timeout 0 = wait forever and can freeze the whole UI
         self.usb_timeout_ms = 5000
         self._connect()
@@ -153,75 +153,72 @@ class ThermalPrinter:
         return usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id, **kwargs)
 
     def _detach_kernel_driver(self, dev):
-        """Detach kernel drivers (e.g. usblp) on all interfaces."""
+        """Detach usblp/kernel driver without claiming the device for ourselves."""
         try:
-            try:
-                cfg = dev.get_active_configuration()
-            except Exception:
-                try:
-                    dev.set_configuration()
-                    cfg = dev.get_active_configuration()
-                except Exception:
-                    cfg = None
-            interfaces = range(1)
-            if cfg is not None:
-                interfaces = range(cfg.bNumInterfaces)
-            for i in interfaces:
-                try:
-                    if dev.is_kernel_driver_active(i):
-                        dev.detach_kernel_driver(i)
-                        print(f"[PRINTER] Detached kernel driver from interface {i}")
-                except NotImplementedError:
-                    return
-                except Exception as e:
-                    print(f"[PRINTER] Could not detach kernel driver on interface {i}: {e}")
+            if dev.is_kernel_driver_active(0):
+                dev.detach_kernel_driver(0)
+                print("[PRINTER] Detached kernel driver from interface 0")
+        except NotImplementedError:
+            pass
         except Exception as e:
             print(f"[PRINTER] Could not detach kernel driver: {e}")
 
     def _open_usb(self, in_ep, out_ep):
-        usb_args = {}
-        if self.bus is not None:
-            usb_args["bus"] = int(self.bus)
-        if self.address is not None:
-            usb_args["address"] = int(self.address)
-        kwargs = dict(
-            profile=self.profile,
-            timeout=self.usb_timeout_ms,
-        )
-        if in_ep is not None:
-            kwargs["in_ep"] = in_ep
-        if out_ep is not None:
-            kwargs["out_ep"] = out_ep
-        if usb_args:
-            kwargs["usb_args"] = usb_args
-        try:
-            return Usb(self.vendor_id, self.product_id, **kwargs)
-        except TypeError:
-            kwargs.pop("timeout", None)
-            kwargs.pop("usb_args", None)
-            return Usb(
-                self.vendor_id, self.product_id,
-                profile=self.profile,
-                in_ep=in_ep if in_ep is not None else 0x81,
-                out_ep=out_ep if out_ep is not None else 0x03,
-            )
+        """Open with named kwargs — positional Usb() args are easy to get wrong."""
+        last_err = None
+        attempts = [
+            dict(in_ep=in_ep, out_ep=out_ep, timeout=self.usb_timeout_ms, profile=self.profile),
+            dict(in_ep=0x81, out_ep=0x03, timeout=self.usb_timeout_ms, profile="POS-5890"),
+            dict(in_ep=0x81, out_ep=0x03, timeout=self.usb_timeout_ms),
+            dict(in_ep=0x81, out_ep=0x03),
+        ]
+        seen = set()
+        for kwargs in attempts:
+            key = tuple(sorted(kwargs.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                print(f"[PRINTER] Opening Usb({self.vendor_id:#06x}, {self.product_id:#06x}, {kwargs})")
+                return Usb(self.vendor_id, self.product_id, **kwargs)
+            except TypeError as e:
+                last_err = e
+                try:
+                    kwargs.pop("timeout", None)
+                    kwargs.pop("profile", None)
+                    return Usb(
+                        self.vendor_id, self.product_id,
+                        in_ep=kwargs.get("in_ep", 0x81),
+                        out_ep=kwargs.get("out_ep", 0x03),
+                    )
+                except Exception as e2:
+                    last_err = e2
+            except Exception as e:
+                last_err = e
+                print(f"[PRINTER] Usb() failed: {e}")
+        if last_err:
+            raise last_err
+        raise RuntimeError("Could not open USB printer")
 
     def _connect(self):
         if not PRINTER_LIB_AVAILABLE:
+            self.last_error = "python-escpos / pyusb is not installed"
             return
 
         self._disconnect()
+        self.last_error = ""
 
         for attempt in range(2):
             try:
-                dev = self._find_device()
-                if dev is None and (self.bus is not None or self.address is not None):
-                    print("[PRINTER] Selected USB address not found; falling back to VID/PID")
-                    self.bus = None
-                    self.address = None
-                    dev = self._find_device(ignore_location=True)
+                # After unplug/replug the USB address changes — prefer VID/PID.
+                dev = self._find_device(ignore_location=True)
                 if dev is None:
-                    print(f"[PRINTER] Device not found (attempt {attempt + 1}/2)")
+                    msg = (
+                        f"USB printer {self.vendor_id:04x}:{self.product_id:04x} not found "
+                        f"(attempt {attempt + 1}/2)"
+                    )
+                    print(f"[PRINTER] {msg}")
+                    self.last_error = msg
                     if attempt == 0:
                         time.sleep(1)
                         continue
@@ -229,31 +226,37 @@ class ThermalPrinter:
 
                 self.bus = getattr(dev, "bus", self.bus)
                 self.address = getattr(dev, "address", self.address)
-
-                try:
-                    dev.reset()
-                    time.sleep(0.4)
-                except Exception as e:
-                    print(f"[PRINTER] USB reset skipped: {e}")
-
                 self._detach_kernel_driver(dev)
                 in_ep, out_ep = _discover_bulk_endpoints(dev)
-                print(f"[PRINTER] Endpoints IN={None if in_ep is None else hex(in_ep)} "
-                      f"OUT={None if out_ep is None else hex(out_ep)}")
+                if in_ep is None:
+                    in_ep = 0x81
+                if out_ep is None:
+                    out_ep = 0x03
+                print(f"[PRINTER] Endpoints IN={hex(in_ep)} OUT={hex(out_ep)}")
+
+                try:
+                    usb.util.dispose_resources(dev)
+                except Exception:
+                    pass
 
                 self.printer = self._open_usb(in_ep, out_ep)
                 print(
                     f"[PRINTER] Connected to {self.vendor_id:04x}:{self.product_id:04x} "
                     f"at {self.bus}:{self.address} (attempt {attempt + 1}/2)"
                 )
+                self.last_error = ""
                 return
             except usb.core.USBError as e:
-                print(f"[PRINTER] USB error (attempt {attempt + 1}/2): {e}")
+                msg = f"USB error: {e}"
+                print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
+                self.last_error = msg
                 self.printer = None
                 if attempt == 0:
                     time.sleep(1)
             except Exception as e:
-                print(f"[PRINTER] Connection failed (attempt {attempt + 1}/2): {e}")
+                msg = f"Connection failed: {e}"
+                print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
+                self.last_error = msg
                 self.printer = None
                 if attempt == 0:
                     time.sleep(1)
@@ -361,27 +364,29 @@ class ThermalPrinter:
     def test_print(self):
         """Reconnect (handles unplug/replug) and print a short test page."""
         if not PRINTER_LIB_AVAILABLE:
+            self.last_error = "python-escpos / pyusb is not installed"
             print("[PRINTER] Test skipped: python-escpos not installed.")
             return False
 
         if not self.reconnect():
+            if not self.last_error:
+                self.last_error = "Could not open the USB printer"
             return False
 
         ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         try:
-            self.printer.set(align="center")
-            self.printer.text("\n")
-            self.printer.text("IdPass printer test\n")
-            self.printer.text(f"{ts}\n")
-            self.printer.text("--------------------------------\n")
-            for _ in range(4):
-                self.printer.control("LF")
+            # Avoid printer.set() — some profiles choke on it. Send plain ESC/POS text.
+            self.printer._raw(b"\nIdPass printer test\n")
+            self.printer._raw(ts.encode("ascii", "replace") + b"\n")
+            self.printer._raw(b"--------------------------------\n\n\n\n")
             try:
                 self.printer.cut()
             except Exception:
-                pass
+                self.printer._raw(b"\n\n\n")
+            self.last_error = ""
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"[PRINTER] Test print error: {e}")
             self._disconnect()
             return False

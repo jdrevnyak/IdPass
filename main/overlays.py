@@ -1366,6 +1366,8 @@ class SettingsOverlay(QWidget):
             ok = False
             try:
                 ok = printer.test_print()
+                if not ok:
+                    err = getattr(printer, "last_error", None) or "Could not connect or print."
             except Exception as e:
                 err = e
             self.printer_test_finished.emit(ok, err)
@@ -1387,10 +1389,13 @@ class SettingsOverlay(QWidget):
                 "Test page was sent. Check the printer for output.",
             )
         else:
+            detail = err or "Could not connect or print."
             QMessageBox.warning(
                 self,
                 "Printer Test",
-                "Could not connect or print. Check the USB cable and power, then try again.",
+                f"{detail}\n\n"
+                "Pick the 0416:5011 thermal printer in the USB list, tap Refresh after plugging it in, "
+                "then try Test printer again. A reboot is not required.",
             )
 
     def _printer_setup_script_path(self):
