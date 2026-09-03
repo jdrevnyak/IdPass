@@ -1,4 +1,13 @@
-# Symcode MJ-5890K 58mm Thermal Printer
-# Allow non-root access and prevent usblp from claiming it
+# Symcode MJ-5890K 58mm Thermal Printer (0416:5011)
+#
+# The kernel's usblp driver is the most reliable way to talk to a USB
+# printer-class device, so we deliberately leave it bound and instead grant
+# access to the character device it creates (/dev/usb/lp0). The app falls back
+# to raw libusb, which detaches usblp on demand, if the node is unavailable.
+
+# Raw libusb access (fallback path)
 SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="5011", MODE="0666", GROUP="plugdev"
-ATTR{idVendor}=="0416", ATTR{idProduct}=="5011", ENV{LIBUSB_FORCE}="1", RUN+="/bin/sh -c 'echo -n $kernel > /sys/bus/usb/drivers/usblp/unbind 2>/dev/null || true'"
+
+# /dev/usb/lp* node created by usblp (preferred path)
+SUBSYSTEM=="usbmisc", KERNEL=="lp[0-9]*", MODE="0666", GROUP="lp"
+SUBSYSTEM=="usb", KERNEL=="lp[0-9]*", MODE="0666", GROUP="lp"
