@@ -1177,7 +1177,7 @@ class SettingsOverlay(QWidget):
                 
         except Exception as e:
             self.active_breaks_label.setText(f"Error checking active breaks: {str(e)}")
-                self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 14px; margin: 5px 0;")
+            self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 14px; margin: 5px 0;")
     
     def get_active_breaks_info(self):
         """Get active outings via OnlineFirstDatabase (uses snapshot listeners when online -- zero Firestore reads)."""
