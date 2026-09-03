@@ -973,6 +973,8 @@ class SettingsOverlay(QWidget):
         printer.product_id = pid
         printer.bus = bus
         printer.address = addr
+        printer.backend_kind = data.get("kind") or "auto"
+        printer.devfile = data.get("devfile")
         update_device_config(
             printer_vendor_id=f"0x{int(vid):04x}",
             printer_product_id=f"0x{int(pid):04x}",

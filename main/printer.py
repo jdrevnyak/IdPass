@@ -6,13 +6,18 @@ import time
 import threading
 
 try:
-    from escpos.printer import Usb
+    from escpos.printer import Usb, Serial as EscposSerial, File as EscposFile
+    from escpos.exceptions import USBNotFoundError
     import usb.core
     import usb.util
+    import serial.tools.list_ports as serial_ports
     PRINTER_LIB_AVAILABLE = True
 except ImportError:
     PRINTER_LIB_AVAILABLE = False
     print("[WARNING] python-escpos or pyusb not installed. Printing disabled.")
+
+import glob
+import os
 
 DEFAULT_VENDOR_ID = 0x0416
 DEFAULT_PRODUCT_ID = 0x5011
@@ -29,11 +34,45 @@ def _usb_device_label(dev):
 
 
 def list_usb_devices():
-    """Return USB devices the user can pick (skips hubs).
+    """USB devices plus serial/lp nodes this printer often uses on a Pi."""
+    devices = _list_raw_usb_devices()
+    extras = []
+    try:
+        import serial.tools.list_ports
+        for p in serial.tools.list_ports.comports():
+            if p.vid is None or p.pid is None:
+                continue
+            if int(p.vid) == DEFAULT_VENDOR_ID and int(p.pid) == DEFAULT_PRODUCT_ID:
+                extras.append({
+                    "kind": "serial",
+                    "devfile": p.device,
+                    "vendor_id": int(p.vid),
+                    "product_id": int(p.pid),
+                    "bus": None,
+                    "address": None,
+                    "label": f"{p.device}  serial  {p.vid:04x}:{p.pid:04x}",
+                    "likely_printer": True,
+                })
+    except Exception as e:
+        print(f"[PRINTER] Serial scan failed: {e}")
+    for lp in sorted(glob.glob("/dev/usb/lp*")):
+        extras.append({
+            "kind": "file",
+            "devfile": lp,
+            "vendor_id": DEFAULT_VENDOR_ID,
+            "product_id": DEFAULT_PRODUCT_ID,
+            "bus": None,
+            "address": None,
+            "label": f"{lp}  USB printer port",
+            "likely_printer": True,
+        })
+    for d in devices:
+        d.setdefault("kind", "usb")
+        d.setdefault("devfile", None)
+    return extras + devices
 
-    Do not read USB string descriptors here — get_string() can claim the
-    interface and leave the printer busy for python-escpos.
-    """
+
+def _list_raw_usb_devices():
     if not PRINTER_LIB_AVAILABLE:
         return []
     devices = []
@@ -93,6 +132,28 @@ def _discover_bulk_endpoints(dev):
     return in_ep, out_ep
 
 
+if PRINTER_LIB_AVAILABLE:
+    class UsbNoReset(Usb):
+        """python-escpos 3.0a9 calls device.reset() in open(), which invalidates
+        the handle so the next write times out (Errno 110). Skip the reset."""
+
+        def open(self, usb_args):
+            self.device = usb.core.find(**usb_args)
+            if self.device is None:
+                raise USBNotFoundError("Device not found or cable not plugged in.")
+            try:
+                if self.device.backend.__module__.endswith("libusb1"):
+                    if self.device.is_kernel_driver_active(0):
+                        self.device.detach_kernel_driver(0)
+                        print("[PRINTER] Detached kernel driver from interface 0")
+            except Exception as e:
+                print(f"[PRINTER] Kernel detach: {e}")
+            try:
+                self.device.set_configuration()
+            except usb.core.USBError as e:
+                print(f"[PRINTER] set_configuration: {e}")
+
+
 class ThermalPrinter:
     def __init__(
         self,
@@ -108,10 +169,11 @@ class ThermalPrinter:
         self.address = address
         self.profile = profile
         self.printer = None
+        self.backend_kind = "auto"
+        self.devfile = None
         self.last_pass_params = None
         self.last_error = ""
-        # libusb timeout 0 = wait forever and can freeze the whole UI
-        self.usb_timeout_ms = 5000
+        self.usb_timeout_ms = 8000
         self._connect()
 
     def configure(self, vendor_id, product_id, bus=None, address=None):
@@ -164,41 +226,42 @@ class ThermalPrinter:
             print(f"[PRINTER] Could not detach kernel driver: {e}")
 
     def _open_usb(self, in_ep, out_ep):
-        """Open with named kwargs — positional Usb() args are easy to get wrong."""
-        last_err = None
-        attempts = [
-            dict(in_ep=in_ep, out_ep=out_ep, timeout=self.usb_timeout_ms, profile=self.profile),
-            dict(in_ep=0x81, out_ep=0x03, timeout=self.usb_timeout_ms, profile="POS-5890"),
-            dict(in_ep=0x81, out_ep=0x03, timeout=self.usb_timeout_ms),
-            dict(in_ep=0x81, out_ep=0x03),
-        ]
-        seen = set()
-        for kwargs in attempts:
-            key = tuple(sorted(kwargs.items()))
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                print(f"[PRINTER] Opening Usb({self.vendor_id:#06x}, {self.product_id:#06x}, {kwargs})")
-                return Usb(self.vendor_id, self.product_id, **kwargs)
-            except TypeError as e:
-                last_err = e
-                try:
-                    kwargs.pop("timeout", None)
-                    kwargs.pop("profile", None)
-                    return Usb(
-                        self.vendor_id, self.product_id,
-                        in_ep=kwargs.get("in_ep", 0x81),
-                        out_ep=kwargs.get("out_ep", 0x03),
-                    )
-                except Exception as e2:
-                    last_err = e2
-            except Exception as e:
-                last_err = e
-                print(f"[PRINTER] Usb() failed: {e}")
-        if last_err:
-            raise last_err
-        raise RuntimeError("Could not open USB printer")
+        """Open USB without python-escpos's device.reset() (that causes Errno 110)."""
+        kwargs = dict(
+            in_ep=in_ep or 0x81,
+            out_ep=out_ep or 0x03,
+            timeout=self.usb_timeout_ms,
+        )
+        print(f"[PRINTER] Opening UsbNoReset({self.vendor_id:#06x}, {self.product_id:#06x}, {kwargs})")
+        try:
+            return UsbNoReset(self.vendor_id, self.product_id, **kwargs)
+        except TypeError:
+            return UsbNoReset(
+                self.vendor_id, self.product_id,
+                in_ep=kwargs["in_ep"],
+                out_ep=kwargs["out_ep"],
+            )
+
+    def _try_serial(self, devfile, baudrate=9600):
+        print(f"[PRINTER] Trying serial {devfile} @ {baudrate}")
+        return EscposSerial(devfile=devfile, baudrate=baudrate, timeout=1, dsrdtr=False)
+
+    def _try_file(self, devfile):
+        print(f"[PRINTER] Trying file {devfile}")
+        return EscposFile(devfile=devfile, auto_flush=True)
+
+    def _matching_serial_ports(self):
+        ports = []
+        try:
+            import serial.tools.list_ports
+            for p in serial.tools.list_ports.comports():
+                if p.vid is None or p.pid is None:
+                    continue
+                if int(p.vid) == int(self.vendor_id) and int(p.pid) == int(self.product_id):
+                    ports.append(p.device)
+        except Exception as e:
+            print(f"[PRINTER] Serial port scan: {e}")
+        return ports
 
     def _connect(self):
         if not PRINTER_LIB_AVAILABLE:
@@ -207,10 +270,47 @@ class ThermalPrinter:
 
         self._disconnect()
         self.last_error = ""
+        errors = []
+
+        if self.backend_kind == "serial" and self.devfile:
+            try:
+                self.printer = self._try_serial(self.devfile)
+                print(f"[PRINTER] Connected via serial {self.devfile}")
+                return
+            except Exception as e:
+                errors.append(f"serial {self.devfile}: {e}")
+
+        if self.backend_kind == "file" and self.devfile:
+            try:
+                self.printer = self._try_file(self.devfile)
+                print(f"[PRINTER] Connected via {self.devfile}")
+                return
+            except Exception as e:
+                errors.append(f"file {self.devfile}: {e}")
+
+        for port in self._matching_serial_ports():
+            for baud in (9600, 19200, 115200):
+                try:
+                    self.printer = self._try_serial(port, baud)
+                    self.backend_kind = "serial"
+                    self.devfile = port
+                    print(f"[PRINTER] Connected via serial {port} @ {baud}")
+                    return
+                except Exception as e:
+                    errors.append(f"serial {port}@{baud}: {e}")
+
+        for lp in sorted(glob.glob("/dev/usb/lp*")):
+            try:
+                self.printer = self._try_file(lp)
+                self.backend_kind = "file"
+                self.devfile = lp
+                print(f"[PRINTER] Connected via {lp}")
+                return
+            except Exception as e:
+                errors.append(f"{lp}: {e}")
 
         for attempt in range(2):
             try:
-                # After unplug/replug the USB address changes — prefer VID/PID.
                 dev = self._find_device(ignore_location=True)
                 if dev is None:
                     msg = (
@@ -218,11 +318,11 @@ class ThermalPrinter:
                         f"(attempt {attempt + 1}/2)"
                     )
                     print(f"[PRINTER] {msg}")
-                    self.last_error = msg
+                    errors.append(msg)
                     if attempt == 0:
                         time.sleep(1)
                         continue
-                    return
+                    break
 
                 self.bus = getattr(dev, "bus", self.bus)
                 self.address = getattr(dev, "address", self.address)
@@ -233,13 +333,13 @@ class ThermalPrinter:
                 if out_ep is None:
                     out_ep = 0x03
                 print(f"[PRINTER] Endpoints IN={hex(in_ep)} OUT={hex(out_ep)}")
-
                 try:
                     usb.util.dispose_resources(dev)
                 except Exception:
                     pass
 
                 self.printer = self._open_usb(in_ep, out_ep)
+                self.backend_kind = "usb"
                 print(
                     f"[PRINTER] Connected to {self.vendor_id:04x}:{self.product_id:04x} "
                     f"at {self.bus}:{self.address} (attempt {attempt + 1}/2)"
@@ -249,17 +349,19 @@ class ThermalPrinter:
             except usb.core.USBError as e:
                 msg = f"USB error: {e}"
                 print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
-                self.last_error = msg
+                errors.append(msg)
                 self.printer = None
                 if attempt == 0:
                     time.sleep(1)
             except Exception as e:
                 msg = f"Connection failed: {e}"
                 print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
-                self.last_error = msg
+                errors.append(msg)
                 self.printer = None
                 if attempt == 0:
                     time.sleep(1)
+
+        self.last_error = " | ".join(errors) if errors else "Could not open the printer"
 
     def reconnect(self):
         """Drop any existing USB session and open a fresh connection."""
