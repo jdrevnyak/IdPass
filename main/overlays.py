@@ -7,6 +7,7 @@ import serial.tools.list_ports
 import os
 import sys
 import subprocess
+import threading
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QComboBox, QPushButton, QMessageBox, QLineEdit,
                             QFormLayout, QGroupBox, QGridLayout, QSizePolicy, QApplication,
@@ -481,6 +482,8 @@ class PasswordOverlay(QWidget):
 class SettingsOverlay(QWidget):
     """Overlay for application settings including ESP32 connection."""
 
+    printer_test_finished = pyqtSignal(object, object)
+
     # Compact 5" / 800×480-friendly group box chrome
     _SETTINGS_GROUP_STYLE = (
         "QGroupBox { font-weight: bold; border: 1px solid #23405a; border-radius: 6px; "
@@ -496,6 +499,7 @@ class SettingsOverlay(QWidget):
         self.setVisible(False)
         self.setGeometry(parent.rect())
         self.parent = parent
+        self.printer_test_finished.connect(self._printer_test_finished)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -826,6 +830,7 @@ class SettingsOverlay(QWidget):
         app_grid.addWidget(restart_btn, 0, 0)
 
         test_printer_btn = QPushButton("Test printer")
+        self.test_printer_btn = test_printer_btn
         test_printer_btn.setStyleSheet(
             ac_style + "QPushButton { background: #3498db; color: white; } "
             "QPushButton:hover { background: #2980b9; } QPushButton:pressed { background: #21618c; }"
@@ -1256,18 +1261,40 @@ class SettingsOverlay(QWidget):
     
     def run_printer_test(self):
         """Send a short test print and show whether the thermal printer responded."""
-        try:
-            printer = getattr(self.parent, "printer", None)
-            if printer is None:
-                QMessageBox.warning(
-                    self,
-                    "Printer Test",
-                    "Printer is not available in this build.",
-                )
-                return
-            ok = printer.test_print()
-        except Exception as e:
-            QMessageBox.critical(self, "Printer Test", f"Error: {e}")
+        printer = getattr(self.parent, "printer", None)
+        if printer is None:
+            QMessageBox.warning(
+                self,
+                "Printer Test",
+                "Printer is not available in this build.",
+            )
+            return
+        if getattr(self, "_printer_test_busy", False):
+            return
+
+        self._printer_test_busy = True
+        if hasattr(self, "test_printer_btn"):
+            self.test_printer_btn.setEnabled(False)
+            self.test_printer_btn.setText("Testing…")
+
+        def work():
+            err = None
+            ok = False
+            try:
+                ok = printer.test_print()
+            except Exception as e:
+                err = e
+            self.printer_test_finished.emit(ok, err)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _printer_test_finished(self, ok, err):
+        self._printer_test_busy = False
+        if hasattr(self, "test_printer_btn"):
+            self.test_printer_btn.setEnabled(True)
+            self.test_printer_btn.setText("Test printer")
+        if err is not None:
+            QMessageBox.critical(self, "Printer Test", f"Error: {err}")
             return
         if ok:
             QMessageBox.information(

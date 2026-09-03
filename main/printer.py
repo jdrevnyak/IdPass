@@ -3,6 +3,7 @@ from PIL import Image
 from datetime import datetime
 import io
 import time
+import threading
 
 try:
     from escpos.printer import Usb
@@ -22,19 +23,30 @@ class ThermalPrinter:
         self.profile = profile
         self.printer = None
         self.last_pass_params = None
+        # libusb timeout 0 = wait forever and can freeze the whole UI
+        self.usb_timeout_ms = 5000
         self._connect()
 
     def _disconnect(self):
         """Release USB resources so the device can be opened again after errors or unplug."""
-        if self.printer is None:
-            return
-        try:
-            close = getattr(self.printer, "close", None)
-            if callable(close):
-                close()
-        except Exception as e:
-            print(f"[PRINTER] Error while closing printer handle: {e}")
+        printer = self.printer
         self.printer = None
+        if printer is None:
+            return
+
+        def _close():
+            try:
+                close = getattr(printer, "close", None)
+                if callable(close):
+                    close()
+            except Exception as e:
+                print(f"[PRINTER] Error while closing printer handle: {e}")
+
+        closer = threading.Thread(target=_close, daemon=True)
+        closer.start()
+        closer.join(timeout=2)
+        if closer.is_alive():
+            print("[PRINTER] USB close timed out; continuing without waiting")
 
     def _detach_kernel_driver(self):
         """Find the raw USB device and detach the kernel driver (e.g. usblp) if active."""
@@ -71,10 +83,17 @@ class ThermalPrinter:
 
                 self._detach_kernel_driver()
 
-                self.printer = Usb(
-                    self.vendor_id, self.product_id,
-                    profile=self.profile, in_ep=0x81, out_ep=0x03,
-                )
+                try:
+                    self.printer = Usb(
+                        self.vendor_id, self.product_id,
+                        profile=self.profile, in_ep=0x81, out_ep=0x03,
+                        timeout=self.usb_timeout_ms,
+                    )
+                except TypeError:
+                    self.printer = Usb(
+                        self.vendor_id, self.product_id,
+                        profile=self.profile, in_ep=0x81, out_ep=0x03,
+                    )
                 print(f"[PRINTER] Connected to {hex(self.vendor_id)}:{hex(self.product_id)} (attempt {attempt + 1}/2)")
                 return
             except usb.core.USBError as e:
@@ -204,13 +223,15 @@ class ThermalPrinter:
 
     def test_print(self):
         """
-        Reconnect and print a short test page (for diagnostics from Settings).
+        Print a short test page (for diagnostics from Settings).
+        Avoids a full reconnect unless the handle is already down — reopen can hang USB.
         """
         if not PRINTER_LIB_AVAILABLE:
             print("[PRINTER] Test skipped: python-escpos not installed.")
             return False
 
-        self.reconnect()
+        if not self.is_connected():
+            self._connect()
         if not self.is_connected():
             return False
 
