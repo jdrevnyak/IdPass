@@ -662,7 +662,10 @@ class NFCReaderGUI(QMainWindow):
         if obj == self.header and event.type() == event.MouseButtonRelease:
             self.password_overlay.show_overlay()
         if obj in self._button_press_times and event.type() == event.MouseButtonPress:
-            self._button_press_times[obj] = datetime.now()
+            # Some touch panels emit multiple "press" events while contact is held.
+            # Only store the first press time so elapsed duration is meaningful.
+            if self._button_press_times.get(obj) is None:
+                self._button_press_times[obj] = datetime.now()
         return super().eventFilter(obj, event)
 
     def _show_settings_overlay(self):
@@ -675,10 +678,12 @@ class NFCReaderGUI(QMainWindow):
         if press_time is None:
             return False
         elapsed = (datetime.now() - press_time).total_seconds()
-        if elapsed < self._MIN_PRESS_DURATION_S:
+        is_ghost = elapsed < self._MIN_PRESS_DURATION_S
+        if is_ghost:
             print(f"[GHOST] Button press too short ({elapsed*1000:.0f}ms), ignoring")
-            return True
-        return False
+        # Clear so the next real interaction records a fresh press start.
+        self._button_press_times[button] = None
+        return is_ghost
 
     def show_bathroom_overlay(self):
         """Show the bathroom break overlay"""
@@ -1003,6 +1008,23 @@ class NFCReaderGUI(QMainWindow):
             self.prompt.setText(f"{label}: {student_name}\nElapsed: {minutes:02d}:{seconds:02d}")
         else:
             self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
+        self._update_visit_button_labels(outings)
+
+    def _update_visit_button_labels(self, outings):
+        """Show End … on home buttons when that visit type is currently active."""
+        active_types = {o.get("type") for o in (outings or [])}
+        labels = (
+            (self.break_start_button, "Bathroom", "End bathroom break"),
+            (self.nurse_button, "Nurse", "End nurse visit"),
+            (self.water_button, "Water", "End water visit"),
+        )
+        for btn, start_label, end_label in labels:
+            if start_label in active_types:
+                btn.setText(end_label)
+                btn.setFont(QFont("Arial", 22, QFont.Bold))
+            else:
+                btn.setText(start_label)
+                btn.setFont(QFont("Arial", 28, QFont.Bold))
     
     def _on_break_type_selected(self, break_type, nfc_uid, student_id):
         """Route the break-type picker selection to the appropriate process method."""

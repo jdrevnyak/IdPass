@@ -513,7 +513,7 @@ class SettingsOverlay(QWidget):
         header_l.addStretch()
         close_header = QPushButton("Close")
         close_header.setFont(QFont("Arial", 13, QFont.Bold))
-        close_header.setMinimumHeight(36)
+        close_header.setMinimumHeight(48)
         close_header.setStyleSheet(
             "QPushButton { background: #95a5a6; color: white; border-radius: 8px; padding: 6px 16px; } "
             "QPushButton:hover { background: #7f8c8d; } QPushButton:pressed { background: #6c7b7d; }"
@@ -577,23 +577,23 @@ class SettingsOverlay(QWidget):
         # Port selection
         port_layout = QHBoxLayout()
         port_lbl = QLabel("Port:")
-        port_lbl.setFont(QFont("Arial", 11))
+        port_lbl.setFont(QFont("Arial", 14))
         port_layout.addWidget(port_lbl)
         self.port_combo = QComboBox()
         self.port_combo.setMinimumWidth(140)
-        self.port_combo.setFont(QFont("Arial", 11))
+        self.port_combo.setFont(QFont("Arial", 14))
         self.refresh_ports()
         port_layout.addWidget(self.port_combo, 1)
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.setFont(QFont("Arial", 11))
-        refresh_btn.setMinimumHeight(32)
+        refresh_btn.setFont(QFont("Arial", 14))
+        refresh_btn.setMinimumHeight(48)
         refresh_btn.clicked.connect(self.refresh_ports)
         port_layout.addWidget(refresh_btn)
         connection_layout.addLayout(port_layout)
 
         self.connect_button = QPushButton("Connect")
-        self.connect_button.setMinimumHeight(36)
-        self.connect_button.setFont(QFont("Arial", 12, QFont.Bold))
+        self.connect_button.setMinimumHeight(48)
+        self.connect_button.setFont(QFont("Arial", 14, QFont.Bold))
         self.connect_button.clicked.connect(self.toggle_connection)
         self.connect_button.setStyleSheet(
             "QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 6px 0; } "
@@ -603,7 +603,7 @@ class SettingsOverlay(QWidget):
 
         self.status_label = QLabel("Status: Disconnected")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.status_label.setStyleSheet("color: #666; font-size: 14px;")
         connection_layout.addWidget(self.status_label)
         
         vbox.addWidget(connection_group)
@@ -615,13 +615,13 @@ class SettingsOverlay(QWidget):
         wifi_layout.setSpacing(6)
         self.wifi_status_label = QLabel("Loading…")
         self.wifi_status_label.setWordWrap(True)
-        self.wifi_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.wifi_status_label.setStyleSheet("color: #666; font-size: 14px;")
         wifi_layout.addWidget(self.wifi_status_label)
         wifi_btn_row = QHBoxLayout()
         wifi_btn_row.setSpacing(6)
         refresh_wifi_btn = QPushButton("Refresh")
-        refresh_wifi_btn.setFont(QFont("Arial", 11))
-        refresh_wifi_btn.setMinimumHeight(34)
+        refresh_wifi_btn.setFont(QFont("Arial", 14))
+        refresh_wifi_btn.setMinimumHeight(48)
         refresh_wifi_btn.setStyleSheet(
             "QPushButton { background: #5dade2; color: white; border-radius: 6px; padding: 4px 8px; } "
             "QPushButton:hover { background: #3498db; } QPushButton:pressed { background: #2874a6; }"
@@ -629,8 +629,8 @@ class SettingsOverlay(QWidget):
         refresh_wifi_btn.clicked.connect(self.update_wifi_status)
         wifi_btn_row.addWidget(refresh_wifi_btn, 1)
         retry_wifi_btn = QPushButton("Retry")
-        retry_wifi_btn.setFont(QFont("Arial", 11))
-        retry_wifi_btn.setMinimumHeight(34)
+        retry_wifi_btn.setFont(QFont("Arial", 14))
+        retry_wifi_btn.setMinimumHeight(48)
         retry_wifi_btn.setStyleSheet(
             "QPushButton { background: #1abc9c; color: white; border-radius: 6px; padding: 4px 8px; } "
             "QPushButton:hover { background: #17a589; } QPushButton:pressed { background: #148f77; }"
@@ -652,11 +652,11 @@ class SettingsOverlay(QWidget):
 
         self.sync_status_label = QLabel("Checking sync status...")
         self.sync_status_label.setWordWrap(True)
-        self.sync_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.sync_status_label.setStyleSheet("color: #666; font-size: 14px;")
         sync_layout.addWidget(self.sync_status_label)
 
         btn_row_style = (
-            "QPushButton { font-size: 11px; padding: 6px 6px; border-radius: 6px; min-height: 34px; }"
+            "QPushButton { font-size: 14px; padding: 6px 6px; border-radius: 6px; min-height: 48px; }"
         )
         sync_grid = QGridLayout()
         sync_grid.setSpacing(6)
@@ -696,7 +696,7 @@ class SettingsOverlay(QWidget):
         sync_layout.addLayout(sync_grid)
 
         self.current_version_label = QLabel("Version: …")
-        self.current_version_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.current_version_label.setStyleSheet("color: #666; font-size: 14px;")
         sync_layout.addWidget(self.current_version_label)
 
         vbox.addWidget(sync_group)
@@ -709,7 +709,7 @@ class SettingsOverlay(QWidget):
 
         self.classroom_status_label = QLabel("")
         self.classroom_status_label.setWordWrap(True)
-        self.classroom_status_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.classroom_status_label.setStyleSheet("color: #666; font-size: 14px;")
         classroom_layout.addWidget(self.classroom_status_label)
 
         # Stacked label + field (full width). QFormLayout side-by-side squeezes fields on 5" screens.
@@ -777,8 +777,8 @@ class SettingsOverlay(QWidget):
         vbox.addWidget(classroom_group)
 
         add_btn = QPushButton("Add student")
-        add_btn.setFont(QFont("Arial", 12, QFont.Bold))
-        add_btn.setMinimumHeight(38)
+        add_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        add_btn.setMinimumHeight(48)
         add_btn.setStyleSheet(
             "QPushButton { background: #2bb3a3; color: white; border-radius: 8px; padding: 6px 0; } "
             "QPushButton:hover { background: #249e90; } QPushButton:pressed { background: #1e857a; }"
@@ -793,9 +793,9 @@ class SettingsOverlay(QWidget):
         student_mgmt_layout.setSpacing(4)
 
         end_breaks_btn = QPushButton("End all active breaks")
-        end_breaks_btn.setMinimumHeight(34)
+        end_breaks_btn.setMinimumHeight(48)
         end_breaks_btn.setStyleSheet(
-            "QPushButton { background: #e67e22; color: white; border-radius: 6px; padding: 6px 8px; font-size: 11px; } "
+            "QPushButton { background: #e67e22; color: white; border-radius: 6px; padding: 6px 8px; font-size: 14px; } "
             "QPushButton:hover { background: #d35400; } QPushButton:pressed { background: #a04000; }"
         )
         end_breaks_btn.clicked.connect(self.end_all_active_breaks)
@@ -803,7 +803,7 @@ class SettingsOverlay(QWidget):
 
         self.active_breaks_label = QLabel("Checking for active breaks...")
         self.active_breaks_label.setWordWrap(True)
-        self.active_breaks_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.active_breaks_label.setStyleSheet("color: #666; font-size: 14px;")
         student_mgmt_layout.addWidget(self.active_breaks_label)
 
         vbox.addWidget(student_mgmt_group)
@@ -815,7 +815,7 @@ class SettingsOverlay(QWidget):
         app_grid.setSpacing(6)
 
         ac_style = (
-            "QPushButton { font-size: 11px; font-weight: bold; padding: 8px 4px; border-radius: 6px; min-height: 38px; }"
+            "QPushButton { font-size: 14px; font-weight: bold; padding: 8px 4px; border-radius: 6px; min-height: 48px; }"
         )
         restart_btn = QPushButton("Restart")
         restart_btn.setStyleSheet(
@@ -1100,11 +1100,11 @@ class SettingsOverlay(QWidget):
             else:
                 color = "#e74c3c"
 
-            self.sync_status_label.setStyleSheet(f"color: {color}; font-size: 11px; margin: 2px 0;")
+            self.sync_status_label.setStyleSheet(f"color: {color}; font-size: 14px; margin: 2px 0;")
 
         except Exception as e:
             self.sync_status_label.setText(f"Sync status error: {str(e)}")
-            self.sync_status_label.setStyleSheet("color: #e74c3c; font-size: 11px; margin: 2px 0;")
+            self.sync_status_label.setStyleSheet("color: #e74c3c; font-size: 14px; margin: 2px 0;")
 
     def update_wifi_status(self):
         """Show Wi-Fi device / SSID / signal (nmcli on Raspberry Pi OS)."""
@@ -1112,7 +1112,7 @@ class SettingsOverlay(QWidget):
             info = get_wifi_info()
         except Exception as e:
             self.wifi_status_label.setText(f"Could not read Wi-Fi status: {e}")
-            self.wifi_status_label.setStyleSheet("color: #e74c3c; font-size: 12px; margin: 5px 0;")
+            self.wifi_status_label.setStyleSheet("color: #e74c3c; font-size: 14px; margin: 5px 0;")
             return
 
         dev = info.get("wifi_device") or "—"
@@ -1135,7 +1135,7 @@ class SettingsOverlay(QWidget):
             lines.append(det)
 
         self.wifi_status_label.setText("\n".join(lines))
-        self.wifi_status_label.setStyleSheet(f"color: {color}; font-size: 12px; margin: 5px 0;")
+        self.wifi_status_label.setStyleSheet(f"color: {color}; font-size: 14px; margin: 5px 0;")
 
     def retry_wifi_now(self):
         """Ask NetworkManager to turn Wi-Fi on and reconnect the interface."""
@@ -1170,14 +1170,14 @@ class SettingsOverlay(QWidget):
             
             if not outings:
                 self.active_breaks_label.setText("No active breaks or visits")
-                self.active_breaks_label.setStyleSheet("color: #27ae60; font-size: 11px; margin: 5px 0;")
+                self.active_breaks_label.setStyleSheet("color: #27ae60; font-size: 14px; margin: 5px 0;")
             else:
                 self.active_breaks_label.setText(f"Active: {len(outings)} student(s) out")
-                self.active_breaks_label.setStyleSheet("color: #e67e22; font-size: 11px; margin: 5px 0;")
+                self.active_breaks_label.setStyleSheet("color: #e67e22; font-size: 14px; margin: 5px 0;")
                 
         except Exception as e:
             self.active_breaks_label.setText(f"Error checking active breaks: {str(e)}")
-            self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 11px; margin: 5px 0;")
+                self.active_breaks_label.setStyleSheet("color: #e74c3c; font-size: 14px; margin: 5px 0;")
     
     def get_active_breaks_info(self):
         """Get active outings via OnlineFirstDatabase (uses snapshot listeners when online -- zero Firestore reads)."""
@@ -1462,6 +1462,8 @@ class VisitOverlay(QWidget):
     """
 
     TITLE = ""
+    END_TITLE = ""
+    VISIT_TYPE = ""
     ACCENT_COLOR = "#23405a"
     ENTRY_METHOD = ""
 
@@ -1552,11 +1554,11 @@ class VisitOverlay(QWidget):
         text_layout.setContentsMargins(40, 40, 40, 40)
         text_layout.setSpacing(24)
 
-        main_title = QLabel(self.TITLE)
-        main_title.setAlignment(Qt.AlignCenter)
-        main_title.setFont(QFont('Arial', 24, QFont.Bold))
-        main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
-        text_layout.addWidget(main_title)
+        self.main_title = QLabel(self.TITLE)
+        self.main_title.setAlignment(Qt.AlignCenter)
+        self.main_title.setFont(QFont('Arial', 24, QFont.Bold))
+        self.main_title.setStyleSheet("color: #23405a; margin-bottom: 32px;")
+        text_layout.addWidget(self.main_title)
 
         instructions = QLabel("Scan your ID card or enter your ID number using the keypad on the left.")
         instructions.setAlignment(Qt.AlignCenter)
@@ -1598,8 +1600,20 @@ class VisitOverlay(QWidget):
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(self.clear_message)
 
+    def _has_active_visit_of_this_type(self):
+        db = getattr(self.parent, "db", None)
+        if not db or not self.VISIT_TYPE:
+            return False
+        try:
+            outings = db.get_active_outings() or []
+        except Exception:
+            return False
+        return any(o.get("type") == self.VISIT_TYPE for o in outings)
+
     def show_overlay(self):
         self.input.setText("")
+        title = self.END_TITLE if (self.END_TITLE and self._has_active_visit_of_this_type()) else self.TITLE
+        self.main_title.setText(title)
         self.setGeometry(self.parent.rect())
         self.setVisible(True)
         self.raise_()
@@ -1632,18 +1646,24 @@ class VisitOverlay(QWidget):
 
 class BathroomOverlay(VisitOverlay):
     TITLE = "Bathroom Break"
+    END_TITLE = "End Bathroom Break"
+    VISIT_TYPE = "Bathroom"
     ACCENT_COLOR = "#2bb3a3"
     ENTRY_METHOD = "process_bathroom_entry"
 
 
 class NurseOverlay(VisitOverlay):
     TITLE = "Nurse Visit"
+    END_TITLE = "End Nurse Visit"
+    VISIT_TYPE = "Nurse"
     ACCENT_COLOR = "#23405a"
     ENTRY_METHOD = "process_nurse_entry"
 
 
 class WaterOverlay(VisitOverlay):
     TITLE = "Water Fountain"
+    END_TITLE = "End Water Visit"
+    VISIT_TYPE = "Water"
     ACCENT_COLOR = "#3498db"
     ENTRY_METHOD = "process_water_entry"
 
@@ -2187,6 +2207,11 @@ class BreakTypePickerOverlay(QWidget):
     break_selected = pyqtSignal(str, str, str)  # break_type, nfc_uid, student_id
 
     _AUTO_DISMISS_MS = 10000
+    _END_LABELS = {
+        "Bathroom": "End bathroom break",
+        "Nurse": "End nurse visit",
+        "Water": "End water visit",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2217,11 +2242,11 @@ class BreakTypePickerOverlay(QWidget):
         self.name_label.setStyleSheet("color: #23405a;")
         vbox.addWidget(self.name_label)
 
-        subtitle = QLabel("Where are you going?")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setFont(QFont("Arial", 16))
-        subtitle.setStyleSheet("color: #666;")
-        vbox.addWidget(subtitle)
+        self.subtitle = QLabel("Where are you going?")
+        self.subtitle.setAlignment(Qt.AlignCenter)
+        self.subtitle.setFont(QFont("Arial", 16))
+        self.subtitle.setStyleSheet("color: #666;")
+        vbox.addWidget(self.subtitle)
 
         vbox.addSpacing(8)
 
@@ -2230,6 +2255,7 @@ class BreakTypePickerOverlay(QWidget):
             ("Nurse", "#23405a", "#1a3048"),
             ("Water", "#3498db", "#2980b9"),
         ]
+        self._type_buttons = {}
         for label, bg, bg_pressed in btn_data:
             btn = QPushButton(label)
             btn.setFont(QFont("Arial", 20, QFont.Bold))
@@ -2240,6 +2266,7 @@ class BreakTypePickerOverlay(QWidget):
                 f"QPushButton:pressed {{ background: {bg_pressed}; }}"
             )
             btn.clicked.connect(lambda _, t=label: self._on_selected(t))
+            self._type_buttons[label] = btn
             vbox.addWidget(btn)
 
         cancel_btn = QPushButton("Cancel")
@@ -2258,11 +2285,41 @@ class BreakTypePickerOverlay(QWidget):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.hide)
 
+    def _active_visit_type(self, nfc_uid, student_id):
+        db = getattr(self.parent, "db", None)
+        identifier = nfc_uid or student_id
+        if not db or not identifier:
+            return None
+        try:
+            if db.is_on_break(identifier):
+                return "Bathroom"
+            if db.is_at_nurse(identifier):
+                return "Nurse"
+            if db.is_at_water(identifier):
+                return "Water"
+        except Exception as e:
+            print(f"[PICKER] Could not check active visit: {e}")
+        return None
+
     def show_for_student(self, student_name: str, nfc_uid: str = "", student_id: str = ""):
         """Show the picker for a specific student."""
         self._nfc_uid = nfc_uid
         self._student_id = student_id
         self.name_label.setText(student_name or "Student")
+        active = self._active_visit_type(nfc_uid, student_id)
+        if active:
+            self.subtitle.setText("Tap to end your visit")
+            for visit_type, btn in self._type_buttons.items():
+                if visit_type == active:
+                    btn.setText(self._END_LABELS.get(visit_type, f"End {visit_type}"))
+                    btn.setVisible(True)
+                else:
+                    btn.setVisible(False)
+        else:
+            self.subtitle.setText("Where are you going?")
+            for visit_type, btn in self._type_buttons.items():
+                btn.setText(visit_type)
+                btn.setVisible(True)
         if self.parent:
             self.setGeometry(self.parent.rect())
         self.setVisible(True)
