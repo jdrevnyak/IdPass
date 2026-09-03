@@ -32,7 +32,7 @@ class OTAUpdateManager:
         self.main_script = self.main_dir / "main.py"
 
         # GitHub configuration
-        self.github_repo_owner = github_repo_owner or "jackdrevnyak"  # Default values
+        self.github_repo_owner = github_repo_owner or "jdrevnyak"  # Default values
         self.github_repo_name = github_repo_name or "IdPass"
         self.current_version = current_version or self._get_current_version()
 
