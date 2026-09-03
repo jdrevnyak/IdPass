@@ -1282,10 +1282,23 @@ class SettingsOverlay(QWidget):
                 "Could not connect or print. Check the USB cable and power, then try again.",
             )
 
+    def _printer_setup_script_path(self):
+        """Locate install_printer.sh in OTA (main/setup) or repo-root (setup/) layouts."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(here, "setup", "install_printer.sh"),
+            os.path.join(here, "install_printer.sh"),
+            os.path.join(here, "..", "setup", "install_printer.sh"),
+        ]
+        for path in candidates:
+            path = os.path.normpath(path)
+            if os.path.isfile(path):
+                return path
+        return os.path.normpath(candidates[0])
+
     def install_printer_rule(self):
         """Install the udev rule for the thermal printer so it works without root."""
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "setup", "install_printer.sh")
-        script = os.path.normpath(script)
+        script = self._printer_setup_script_path()
 
         if not os.path.isfile(script):
             QMessageBox.warning(self, "Install Printer", f"Setup script not found:\n{script}")
