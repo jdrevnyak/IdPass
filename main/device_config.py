@@ -11,6 +11,10 @@ DEFAULT_CONFIG = {
     "classroom_label": "",
     "teacher_name": "",
     "settings_pin": "1234",
+    "printer_vendor_id": "0x0416",
+    "printer_product_id": "0x5011",
+    "printer_bus": "",
+    "printer_address": "",
 }
 
 CONFIG_FILENAME = "device_config.json"

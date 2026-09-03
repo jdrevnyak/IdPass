@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
 
-from network_status import get_wifi_info, try_wifi_reconnect
+from printer import list_usb_devices
 
 
 class KeypadOverlay(QWidget):
@@ -812,6 +812,31 @@ class SettingsOverlay(QWidget):
 
         vbox.addWidget(student_mgmt_group)
 
+        printer_group = QGroupBox("Printer")
+        printer_group.setFont(QFont("Arial", 12, QFont.Bold))
+        printer_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
+        printer_layout = QVBoxLayout(printer_group)
+        printer_layout.setSpacing(6)
+        usb_row = QHBoxLayout()
+        usb_lbl = QLabel("USB:")
+        usb_lbl.setFont(QFont("Arial", 14))
+        usb_row.addWidget(usb_lbl)
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumHeight(48)
+        self.printer_combo.setFont(QFont("Arial", 13))
+        usb_row.addWidget(self.printer_combo, 1)
+        refresh_printer_btn = QPushButton("Refresh")
+        refresh_printer_btn.setFont(QFont("Arial", 14))
+        refresh_printer_btn.setMinimumHeight(48)
+        refresh_printer_btn.clicked.connect(self.refresh_printer_devices)
+        usb_row.addWidget(refresh_printer_btn)
+        printer_layout.addLayout(usb_row)
+        self.printer_status_label = QLabel("Select the printer USB device, then Test printer.")
+        self.printer_status_label.setWordWrap(True)
+        self.printer_status_label.setStyleSheet("color: #666; font-size: 14px;")
+        printer_layout.addWidget(self.printer_status_label)
+        vbox.addWidget(printer_group)
+
         app_control_group = QGroupBox("App")
         app_control_group.setFont(QFont("Arial", 12, QFont.Bold))
         app_control_group.setStyleSheet(self._SETTINGS_GROUP_STYLE)
@@ -890,6 +915,7 @@ class SettingsOverlay(QWidget):
         self._register_keyboard_field(self.classroom_label_input, "Display Name")
         self._register_keyboard_field(self.teacher_name_input, "Teacher")
         self.populate_classroom_fields()
+        self.refresh_printer_devices()
 
     def refresh_ports(self):
         """Refresh the list of available serial ports"""
@@ -899,7 +925,63 @@ class SettingsOverlay(QWidget):
         if not ports:
             self.status_label.setText("Status: No serial ports found")
         self.port_combo.addItems(ports)
-    
+
+    def refresh_printer_devices(self):
+        """Rescan USB devices for the printer dropdown."""
+        previous = self.printer_combo.currentData()
+        self.printer_combo.clear()
+        devices = list_usb_devices()
+        if not devices:
+            self.printer_combo.addItem("No USB devices found — tap Refresh", None)
+            self.printer_status_label.setText(
+                "No USB devices found. Plug in the printer, wait a few seconds, then Refresh. "
+                "A reboot is not required."
+            )
+            return
+
+        preferred_idx = 0
+        for i, dev in enumerate(devices):
+            self.printer_combo.addItem(dev["label"], dev)
+            if previous and (
+                previous.get("vendor_id") == dev["vendor_id"]
+                and previous.get("product_id") == dev["product_id"]
+                and previous.get("bus") == dev["bus"]
+                and previous.get("address") == dev["address"]
+            ):
+                preferred_idx = i
+            elif not previous and dev.get("likely_printer"):
+                preferred_idx = i
+        self.printer_combo.setCurrentIndex(preferred_idx)
+        current = self.printer_combo.currentData() or {}
+        self.printer_status_label.setText(
+            f"{len(devices)} USB device(s). Selected: {current.get('label', 'none')}"
+        )
+
+    def _apply_selected_printer(self, connect=False):
+        """Point the ThermalPrinter at the dropdown selection and save it."""
+        from device_config import update_device_config
+
+        printer = getattr(self.parent, "printer", None)
+        data = self.printer_combo.currentData() if hasattr(self, "printer_combo") else None
+        if printer is None or not data:
+            return
+        vid = data.get("vendor_id")
+        pid = data.get("product_id")
+        bus = data.get("bus")
+        addr = data.get("address")
+        printer.vendor_id = vid
+        printer.product_id = pid
+        printer.bus = bus
+        printer.address = addr
+        update_device_config(
+            printer_vendor_id=f"0x{int(vid):04x}",
+            printer_product_id=f"0x{int(pid):04x}",
+            printer_bus="" if bus is None else str(bus),
+            printer_address="" if addr is None else str(addr),
+        )
+        if connect:
+            printer.reconnect()
+
     def toggle_connection(self):
         """Connect to or disconnect from the selected serial port"""
         if self.parent.serial_connection is None:
@@ -1276,6 +1358,8 @@ class SettingsOverlay(QWidget):
         if hasattr(self, "test_printer_btn"):
             self.test_printer_btn.setEnabled(False)
             self.test_printer_btn.setText("Testing…")
+
+        self._apply_selected_printer(connect=False)
 
         def work():
             err = None

@@ -9,6 +9,7 @@ import sys
 import os
 import serial
 import serial.tools.list_ports
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -272,8 +273,8 @@ class NFCReaderGUI(QMainWindow):
         )
         # Automatic update checking is disabled in UpdateManager - users check manually via settings
 
-        # Initialize Thermal Printer
-        self.printer = ThermalPrinter()
+        # Initialize Thermal Printer (VID/PID from saved settings)
+        self.printer = ThermalPrinter(**self._printer_kwargs_from_config(initial_config))
 
 
 
@@ -284,6 +285,33 @@ class NFCReaderGUI(QMainWindow):
             return version_file.read_text().strip()
         except Exception:
             return "0.0.0"
+
+    @staticmethod
+    def _parse_optional_int(value):
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            return int(str(value), 0)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _printer_kwargs_from_config(cls, config):
+        config = config or {}
+        vid = cls._parse_optional_int(config.get("printer_vendor_id"))
+        pid = cls._parse_optional_int(config.get("printer_product_id"))
+        kwargs = {}
+        if vid is not None:
+            kwargs["vendor_id"] = vid
+        if pid is not None:
+            kwargs["product_id"] = pid
+        bus = cls._parse_optional_int(config.get("printer_bus"))
+        addr = cls._parse_optional_int(config.get("printer_address"))
+        if bus is not None:
+            kwargs["bus"] = bus
+        if addr is not None:
+            kwargs["address"] = addr
+        return kwargs
 
     def _set_classroom_attributes(self, config, refresh_prompt=True):
         """Apply classroom configuration to in-memory attributes."""
@@ -758,18 +786,31 @@ class NFCReaderGUI(QMainWindow):
                 self.update_gpio_led_status()  # Immediately update GPIO LED
                 QTimer.singleShot(3000, self.bathroom_overlay.hide)
                 QTimer.singleShot(3000, self.refresh_classroom_prompt)
-                
-                # Print Hall Pass
-                # Use the retrieved name and correct student ID
                 print_name = student_name_db
                 print_id = student_id_db if nfc_uid else student_id
-                
-                # Print the pass in background/non-blocking if possible, but here we just call it
                 print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self.printer.print_pass(print_name, print_id, pass_type="BATHROOM PASS", location=print_location)
-
+                self._print_pass_async(print_name, print_id, "BATHROOM PASS", print_location)
             else:
                 self.prompt.setText(message)
+
+    def _print_pass_async(self, student_name, student_id, pass_type, location=None):
+        """Print a hall pass on a background thread so USB I/O cannot freeze the UI."""
+        printer = getattr(self, "printer", None)
+        if printer is None:
+            return
+
+        def work():
+            try:
+                printer.print_pass(
+                    student_name,
+                    student_id,
+                    pass_type=pass_type,
+                    location=location,
+                )
+            except Exception as e:
+                print(f"[PRINTER] Background print failed: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def process_nurse_entry(self, student_id=None, nfc_uid=None):
         """Process nurse visit entry/exit"""
@@ -824,7 +865,7 @@ class NFCReaderGUI(QMainWindow):
 
                 # Print the pass
                 print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self.printer.print_pass(print_name, print_id, pass_type="NURSE PASS", location=print_location)
+                self._print_pass_async(print_name, print_id, "NURSE PASS", print_location)
 
             else:
                 self.prompt.setText(message)
@@ -882,7 +923,7 @@ class NFCReaderGUI(QMainWindow):
 
                 # Print the pass
                 print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self.printer.print_pass(print_name, print_id, pass_type="WATER PASS", location=print_location)
+                self._print_pass_async(print_name, print_id, "WATER PASS", print_location)
             else:
                 self.prompt.setText(message)
 
