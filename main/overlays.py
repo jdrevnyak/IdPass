@@ -956,9 +956,8 @@ class SettingsOverlay(QWidget):
         if not devices:
             self.printer_combo.addItem("No USB/serial devices found — tap Refresh", None)
             self.printer_status_label.setText(
-                "No devices found. Power the printer ON first (battery printers often "
-                "do nothing on USB while powered off), use a data cable, wait a few "
-                "seconds, then Refresh. Look for ttyUSB0 / ttyACM0 / CH340 — not 0416:5011."
+                "No ttyACM/ttyUSB printer found. Power the mini printer ON, wait for its LED, "
+                "unplug/replug USB, then Refresh. ttyAMA0 is the Pi itself — ignore it."
             )
             return
 
@@ -1404,6 +1403,15 @@ class SettingsOverlay(QWidget):
             err = None
             ok = False
             try:
+                from printer import ESCPOS_AVAILABLE, ensure_printer_packages
+                if not ESCPOS_AVAILABLE:
+                    if hasattr(self, "test_printer_btn"):
+                        # status text via finished handler; keep console trail
+                        print("[PRINTER] python-escpos missing — installing…")
+                    pkg_ok, pkg_msg = ensure_printer_packages()
+                    if not pkg_ok:
+                        self.printer_test_finished.emit(False, f"python-escpos install failed:\n{pkg_msg}")
+                        return
                 ok = printer.test_print()
                 if not ok:
                     err = getattr(printer, "last_error", None) or "Could not connect or print."
@@ -1460,6 +1468,11 @@ class SettingsOverlay(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _printer_diag_finished(self, report, extra):
+        # Reused as a general UI-thread callback for printer background work
+        if report == "__install__":
+            self._handle_printer_install_finished(extra)
+            return
+
         self._printer_diag_busy = False
         if hasattr(self, "diagnose_printer_btn"):
             self.diagnose_printer_btn.setEnabled(True)
@@ -1597,35 +1610,69 @@ class SettingsOverlay(QWidget):
         return os.path.normpath(candidates[0])
 
     def install_printer_rule(self):
-        """Install the udev rule for the thermal printer so it works without root."""
-        script = self._printer_setup_script_path()
-
-        if not os.path.isfile(script):
-            QMessageBox.warning(self, "Install Printer", f"Setup script not found:\n{script}")
+        """Install printer Python packages + udev rule so the printer works without root."""
+        if getattr(self, "_printer_install_busy", False):
             return
+        self._printer_install_busy = True
 
-        try:
-            result = subprocess.run(
-                ["sudo", "bash", script],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode == 0:
-                QMessageBox.information(
-                    self,
-                    "Install Printer",
-                    "Printer USB rule installed.\n\nUnplug and re-plug the printer, then restart the app.",
-                )
+        def work():
+            messages = []
+            try:
+                from printer import ensure_printer_packages
+                ok, msg = ensure_printer_packages()
+                messages.append(("packages", ok, msg))
+            except Exception as e:
+                messages.append(("packages", False, str(e)))
+
+            script = self._printer_setup_script_path()
+            if not os.path.isfile(script):
+                messages.append(("udev", False, f"Setup script not found:\n{script}"))
             else:
-                detail = (result.stderr or result.stdout).strip()
-                QMessageBox.warning(
-                    self,
-                    "Install Printer",
-                    f"Script exited with code {result.returncode}.\n\n{detail}",
-                )
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "Install Printer", "The install script timed out.")
-        except Exception as e:
-            QMessageBox.critical(self, "Install Printer", f"Error running install script:\n{e}")
+                try:
+                    result = subprocess.run(
+                        ["sudo", "bash", script],
+                        capture_output=True, text=True, timeout=180,
+                    )
+                    detail = (result.stdout or result.stderr or "").strip()
+                    messages.append(("udev", result.returncode == 0, detail or f"exit {result.returncode}"))
+                except subprocess.TimeoutExpired:
+                    messages.append(("udev", False, "The install script timed out."))
+                except Exception as e:
+                    messages.append(("udev", False, str(e)))
+
+            # marshal back to UI thread via existing pattern
+            self.printer_diag_finished.emit("__install__", messages)
+
+        if hasattr(self, "printer_status_label"):
+            self.printer_status_label.setText("Installing printer packages (python-escpos)…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _handle_printer_install_finished(self, messages):
+        self._printer_install_busy = False
+        lines = []
+        all_ok = True
+        for name, ok, msg in messages:
+            all_ok = all_ok and ok
+            lines.append(f"{name}: {'OK' if ok else 'FAILED'}\n{msg}")
+        text = "\n\n".join(lines)
+        if hasattr(self, "printer_status_label"):
+            self.printer_status_label.setText(
+                "Printer install finished." if all_ok else "Printer install had errors — see message."
+            )
+        if all_ok:
+            QMessageBox.information(
+                self,
+                "Install Printer",
+                "Printer packages installed.\n\n"
+                "1. Power the mini printer ON\n"
+                "2. Unplug and re-plug the USB cable\n"
+                "3. Tap Refresh — look for ttyACM0 or ttyUSB0 (not ttyAMA0)\n"
+                "4. Tap Test printer\n\n"
+                f"{text}",
+            )
+            self.refresh_printer_devices()
+        else:
+            QMessageBox.warning(self, "Install Printer", text)
 
     def reprint_last_pass(self):
         """Reprint the most recently printed hall pass."""

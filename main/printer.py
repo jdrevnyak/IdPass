@@ -79,6 +79,98 @@ def _is_likely_printer_ids(vid, pid):
         return False
 
 
+def _is_board_uart(path):
+    """Raspberry Pi onboard UART — never the USB receipt printer."""
+    name = os.path.basename(path or "")
+    return name.startswith(("ttyAMA", "ttyS", "serial"))
+
+
+def _is_usb_serial_path(path):
+    name = os.path.basename(path or "")
+    return name.startswith(("ttyUSB", "ttyACM", "rfcomm"))
+
+
+def reload_printer_backends():
+    """Re-import escpos/pyusb after pip install in a running process."""
+    global EscposUsb, EscposSerial, EscposFile, USBNotFoundError, usb
+    global ESCPOS_AVAILABLE, USB_AVAILABLE, PRINTER_LIB_AVAILABLE, UsbNoReset
+
+    try:
+        import importlib
+        import escpos.printer as escpos_printer
+        importlib.reload(escpos_printer)
+        EscposSerial = escpos_printer.Serial
+        EscposFile = escpos_printer.File
+        ESCPOS_AVAILABLE = True
+    except Exception as e:
+        ESCPOS_AVAILABLE = False
+        print(f"[PRINTER] python-escpos still unavailable: {e}")
+
+    try:
+        from escpos.printer import Usb as _Usb
+        from escpos.exceptions import USBNotFoundError as _USBNotFoundError
+        import usb.core as usb_core
+        import usb.util as usb_util
+
+        class _UsbNS:
+            core = usb_core
+            util = usb_util
+
+        EscposUsb = _Usb
+        USBNotFoundError = _USBNotFoundError
+        usb = _UsbNS
+        USB_AVAILABLE = True
+
+        class UsbNoReset(_Usb):
+            def open(self, usb_args):
+                self.device = usb.core.find(**usb_args)
+                if self.device is None:
+                    raise USBNotFoundError("Device not found or cable not plugged in.")
+                try:
+                    if self.device.backend.__module__.endswith("libusb1"):
+                        if self.device.is_kernel_driver_active(0):
+                            self.device.detach_kernel_driver(0)
+                except Exception:
+                    pass
+                try:
+                    self.device.set_configuration()
+                except Exception:
+                    pass
+    except Exception as e:
+        USB_AVAILABLE = False
+        print(f"[PRINTER] pyusb still unavailable: {e}")
+
+    PRINTER_LIB_AVAILABLE = ESCPOS_AVAILABLE
+    return ESCPOS_AVAILABLE
+
+
+def ensure_printer_packages():
+    """Install printer deps into the running interpreter's environment."""
+    import subprocess
+    import sys
+
+    packages = [
+        "python-escpos==3.0a9",
+        "pyserial>=3.5",
+        "pyusb>=1.2.1",
+        "Pillow",
+        "qrcode",
+    ]
+    cmd = [sys.executable, "-m", "pip", "install", *packages]
+    print(f"[PRINTER] Installing packages: {' '.join(packages)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        return False, f"pip failed to start: {e}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return False, detail[-800:] if detail else f"pip exited {result.returncode}"
+    ok = reload_printer_backends()
+    if not ok:
+        return False, "Packages installed but python-escpos still cannot be imported. Restart the app."
+    return True, "Installed python-escpos and printer dependencies."
+
+
 def _usb_device_label(dev):
     vid = int(dev.idVendor)
     pid = int(dev.idProduct)
@@ -108,7 +200,11 @@ def _serial_port_label(port):
         name = chip
     else:
         name = "serial"
-    tag = "  ← try this" if _is_likely_printer_ids(vid, pid) else ""
+    tag = ""
+    if _is_board_uart(getattr(port, "device", "") or ""):
+        name = "Pi board UART (not printer)"
+    elif _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(getattr(port, "device", "") or ""):
+        tag = "  ← try this"
     return f"{port.device}  {name}  {ids}{tag}"
 
 
@@ -123,6 +219,8 @@ def list_usb_devices():
             path = getattr(p, "device", None) or ""
             if not path or path.endswith("debugconsole"):
                 continue
+            if _is_board_uart(path):
+                continue  # ttyAMA0 is the Pi's own UART, not the receipt printer
             if path in seen_serial:
                 continue
             seen_serial.add(path)
@@ -136,14 +234,28 @@ def list_usb_devices():
                 "bus": None,
                 "address": None,
                 "label": _serial_port_label(p),
-                "likely_printer": _is_likely_printer_ids(vid, pid) or path.startswith(
-                    ("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")
-                ),
+                "likely_printer": _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(path),
             })
     except Exception as e:
         print(f"[PRINTER] Serial scan failed: {e}")
 
-    # Bluetooth SPP bindings created with rfcomm
+    # pyserial sometimes misses nodes that exist on disk — pick them up directly
+    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+        for path in sorted(glob.glob(pattern)):
+            if path in seen_serial:
+                continue
+            seen_serial.add(path)
+            extras.append({
+                "kind": "serial",
+                "devfile": path,
+                "vendor_id": 0,
+                "product_id": 0,
+                "bus": None,
+                "address": None,
+                "label": f"{path}  USB serial  ← try this",
+                "likely_printer": True,
+            })
+
     for rf in sorted(glob.glob("/dev/rfcomm*")):
         if rf in seen_serial:
             continue
@@ -376,7 +488,7 @@ class ThermalPrinter:
             import serial.tools.list_ports
             for p in serial.tools.list_ports.comports():
                 path = getattr(p, "device", None)
-                if not path or path in ports:
+                if not path or path in ports or _is_board_uart(path):
                     continue
                 vid = int(p.vid) if p.vid is not None else None
                 pid = int(p.pid) if p.pid is not None else None
@@ -384,15 +496,14 @@ class ThermalPrinter:
                     if int(vid) == int(self.vendor_id) and int(pid) == int(self.product_id):
                         ports.append(path)
                         continue
-                if _is_likely_printer_ids(vid, pid) or path.startswith(
-                    ("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")
-                ):
+                if _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(path):
                     ports.append(path)
         except Exception as e:
             print(f"[PRINTER] Serial port scan: {e}")
-        for rf in sorted(glob.glob("/dev/rfcomm*")):
-            if rf not in ports:
-                ports.append(rf)
+        for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+            for path in sorted(glob.glob(pattern)):
+                if path not in ports:
+                    ports.append(path)
         return ports
 
     def _matching_serial_ports(self):
@@ -608,14 +719,17 @@ class ThermalPrinter:
 
     def test_print(self):
         """Reconnect (handles unplug/replug) and print a short test page."""
+        global ESCPOS_AVAILABLE
         if not ESCPOS_AVAILABLE:
-            self.last_error = "python-escpos is not installed"
-            print("[PRINTER] Test skipped: python-escpos not installed.")
-            return False
+            ok, msg = ensure_printer_packages()
+            if not ok:
+                self.last_error = f"python-escpos is not installed ({msg})"
+                print(f"[PRINTER] Test skipped: {self.last_error}")
+                return False
 
         if not self.reconnect():
             if not self.last_error:
-                self.last_error = "Could not open the printer"
+                self.last_error = "Could not open the printer (is ttyACM0/ttyUSB0 present? Power printer ON.)"
             return False
 
         ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")

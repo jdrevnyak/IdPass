@@ -142,9 +142,11 @@ def _test_serial(r):
         pid = f"{p.pid:04x}" if p.pid is not None else "----"
         r.write(f"  {p.device}  {vid}:{pid}  {p.description}")
 
-    # Prefer known printer chips, then any ttyUSB/ttyACM, then everything else
     ranked = []
     for p in ports:
+        if p.device.startswith("/dev/ttyAMA") or os.path.basename(p.device).startswith("ttyS"):
+            r.write(f"  {p.device}  (Pi board UART — skipped, not the printer)")
+            continue
         score = 2
         if p.vid is not None and p.pid is not None and (int(p.vid), int(p.pid)) in {
             (0x0416, 0x5011), (0x1A86, 0x7523), (0x1A86, 0x5523), (0x1A86, 0x55D4),
@@ -155,7 +157,21 @@ def _test_serial(r):
         elif p.device.startswith(("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")):
             score = 1
         ranked.append((score, p))
+    # Also include nodes that exist on disk but pyserial missed
+    seen = {p.device for _, p in ranked}
+    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+        for path in sorted(glob.glob(pattern)):
+            if path in seen:
+                continue
+            class _P:
+                device = path
+            ranked.append((1, _P()))
     ranked.sort(key=lambda x: (x[0], x[1].device))
+
+    if not ranked:
+        r.write("SKIP: only board UART ports found (e.g. ttyAMA0).")
+        r.write("      Power ON the mini printer, then unplug/replug USB.")
+        return {"ok": False}
 
     for _score, p in ranked:
         for baud in (9600, 115200, 19200, 38400):
