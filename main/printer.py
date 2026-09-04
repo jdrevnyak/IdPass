@@ -144,8 +144,63 @@ def reload_printer_backends():
     return ESCPOS_AVAILABLE
 
 
+def _find_project_venv_python():
+    """Locate the IdPass venv python (never use system python on Bookworm)."""
+    import sys
+
+    candidates = []
+    # Prefer the interpreter we're already running if it lives inside a venv
+    exe = getattr(sys, "executable", "") or ""
+    if exe and ("venv" in exe.replace("\\", "/") or getattr(sys, "base_prefix", sys.prefix) != sys.prefix):
+        candidates.append(exe)
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    search = here
+    for _ in range(6):
+        candidates.extend(
+            [
+                os.path.join(search, "venv", "bin", "python"),
+                os.path.join(search, "venv", "bin", "python3"),
+                os.path.join(search, ".venv", "bin", "python"),
+                os.path.join(search, "venv", "Scripts", "python.exe"),
+            ]
+        )
+        parent = os.path.dirname(search)
+        if parent == search:
+            break
+        search = parent
+
+    # Common deploy path on the classroom Pis
+    candidates.append("/home/jdrevnyak/id/venv/bin/python")
+
+    seen = set()
+    for path in candidates:
+        path = os.path.normpath(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _add_venv_site_packages(venv_python):
+    """Make packages installed into the project venv importable in this process."""
+    import sys
+
+    venv_root = os.path.dirname(os.path.dirname(os.path.abspath(venv_python)))
+    for site in glob.glob(os.path.join(venv_root, "lib", "python*", "site-packages")):
+        if site not in sys.path:
+            sys.path.insert(0, site)
+            print(f"[PRINTER] Added to sys.path: {site}")
+    # Windows venv layout
+    win_site = os.path.join(venv_root, "Lib", "site-packages")
+    if os.path.isdir(win_site) and win_site not in sys.path:
+        sys.path.insert(0, win_site)
+
+
 def ensure_printer_packages():
-    """Install printer deps into the running interpreter's environment."""
+    """Install printer deps into the project venv (never system Python)."""
     import subprocess
     import sys
 
@@ -156,19 +211,55 @@ def ensure_printer_packages():
         "Pillow",
         "qrcode",
     ]
-    cmd = [sys.executable, "-m", "pip", "install", *packages]
-    print(f"[PRINTER] Installing packages: {' '.join(packages)}")
+
+    venv_python = _find_project_venv_python()
+    if not venv_python:
+        return (
+            False,
+            "No project venv found. Expected something like /home/jdrevnyak/id/venv/bin/python. "
+            "Start the app with the venv activated (start_nfc_reader.sh / autostart).",
+        )
+
+    # Detect system Python / externally-managed env and refuse that interpreter
+    in_venv = ("venv" in venv_python.replace("\\", "/")) or (
+        getattr(sys, "base_prefix", sys.prefix) != sys.prefix and os.path.normpath(venv_python) == os.path.normpath(sys.executable)
+    )
+    if not in_venv and "venv" not in venv_python.replace("\\", "/"):
+        return (
+            False,
+            f"Refusing to install into non-venv Python:\n{venv_python}\n"
+            "Bookworm blocks system pip (externally-managed-environment).",
+        )
+
+    cmd = [venv_python, "-m", "pip", "install", *packages]
+    print(f"[PRINTER] Installing with {venv_python}: {' '.join(packages)}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except Exception as e:
         return False, f"pip failed to start: {e}"
+
+    out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        return False, detail[-800:] if detail else f"pip exited {result.returncode}"
+        # Last-resort hint if somehow still hitting system python
+        if "externally-managed-environment" in out:
+            return (
+                False,
+                "pip refused install (externally-managed-environment). "
+                f"Tried: {venv_python}\n"
+                "Fix: run the app from the project venv, then tap Install printer again.\n"
+                f"{out[-500:]}",
+            )
+        return False, out[-800:] if out else f"pip exited {result.returncode}"
+
+    _add_venv_site_packages(venv_python)
     ok = reload_printer_backends()
     if not ok:
-        return False, "Packages installed but python-escpos still cannot be imported. Restart the app."
-    return True, "Installed python-escpos and printer dependencies."
+        return (
+            False,
+            f"Packages installed into {venv_python} but python-escpos still cannot be imported. "
+            "Restart the app (quit and reopen).",
+        )
+    return True, f"Installed python-escpos into {venv_python}"
 
 
 def _usb_device_label(dev):

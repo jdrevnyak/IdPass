@@ -30,10 +30,20 @@ done
 # (Raspberry Pi OS Bookworm is an externally-managed environment).
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}"
 if [ -n "$PROJECT_DIR" ] && [ -n "$REAL_USER" ]; then
-    echo "Ensuring printer packages are installed in $PROJECT_DIR/venv ..."
-    sudo -u "$REAL_USER" "$PROJECT_DIR/venv/bin/pip" install \
-        "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" \
-        || echo "Warning: could not install printer packages; continuing with udev setup."
+    VENV_PIP="$PROJECT_DIR/venv/bin/pip"
+    VENV_PY="$PROJECT_DIR/venv/bin/python"
+    if [ ! -x "$VENV_PIP" ]; then
+        echo "ERROR: venv pip not found at $VENV_PIP"
+        echo "Create the venv first, or start the app via start_nfc_reader.sh."
+    else
+        echo "Installing printer packages with $VENV_PIP (not system pip) ..."
+        sudo -u "$REAL_USER" "$VENV_PIP" install \
+            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+            || echo "Warning: could not install printer packages; continuing with udev setup."
+        echo "python-escpos check:"
+        sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
+            || echo "Warning: escpos import failed after install."
+    fi
 else
     echo "No project venv found; skipping Python package install."
 fi
