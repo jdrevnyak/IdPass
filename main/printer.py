@@ -144,34 +144,113 @@ def reload_printer_backends():
     return ESCPOS_AVAILABLE
 
 
-def _find_project_venv_python():
-    """Locate the IdPass venv python (never use system python on Bookworm)."""
+def _project_search_roots():
+    """Directories that may contain the IdPass venv."""
     import sys
 
-    candidates = []
-    # Prefer the interpreter we're already running if it lives inside a venv
-    exe = getattr(sys, "executable", "") or ""
-    if exe and ("venv" in exe.replace("\\", "/") or getattr(sys, "base_prefix", sys.prefix) != sys.prefix):
-        candidates.append(exe)
+    roots = []
+    env_root = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if env_root:
+        roots.append(env_root if os.path.basename(env_root) != "venv" else os.path.dirname(env_root))
+        roots.append(env_root)
 
     here = os.path.dirname(os.path.abspath(__file__))
+    roots.append(here)
+    roots.append(os.getcwd())
+
+    # Walk parents of this file (main/printer.py -> project root)
     search = here
-    for _ in range(6):
-        candidates.extend(
-            [
-                os.path.join(search, "venv", "bin", "python"),
-                os.path.join(search, "venv", "bin", "python3"),
-                os.path.join(search, ".venv", "bin", "python"),
-                os.path.join(search, "venv", "Scripts", "python.exe"),
-            ]
-        )
+    for _ in range(8):
+        roots.append(search)
         parent = os.path.dirname(search)
         if parent == search:
             break
         search = parent
 
-    # Common deploy path on the classroom Pis
-    candidates.append("/home/jdrevnyak/id/venv/bin/python")
+    # Common classroom Pi layouts
+    roots.extend(
+        [
+            "/home/jdrevnyak/id",
+            os.path.expanduser("~/id"),
+        ]
+    )
+    try:
+        roots.extend(glob.glob("/home/*/id"))
+    except Exception:
+        pass
+
+    # Dedupe while preserving order
+    out = []
+    seen = set()
+    for root in roots:
+        if not root:
+            continue
+        root = os.path.normpath(root)
+        if root in seen:
+            continue
+        seen.add(root)
+        out.append(root)
+    return out
+
+
+def _venv_python_candidates_in(root):
+    """Return possible python binaries under a project/venv root."""
+    paths = []
+    # root is already the venv directory
+    paths.extend(
+        [
+            os.path.join(root, "bin", "python"),
+            os.path.join(root, "bin", "python3"),
+            os.path.join(root, "Scripts", "python.exe"),
+        ]
+    )
+    # root is the project directory containing venv/
+    paths.extend(
+        [
+            os.path.join(root, "venv", "bin", "python"),
+            os.path.join(root, "venv", "bin", "python3"),
+            os.path.join(root, ".venv", "bin", "python"),
+            os.path.join(root, "venv", "Scripts", "python.exe"),
+        ]
+    )
+    for pattern in (
+        os.path.join(root, "bin", "python3.*"),
+        os.path.join(root, "venv", "bin", "python3.*"),
+        os.path.join(root, ".venv", "bin", "python3.*"),
+    ):
+        paths.extend(sorted(glob.glob(pattern)))
+    return paths
+
+
+def _is_usable_python(path):
+    if not path:
+        return False
+    try:
+        if os.path.islink(path) or os.path.isfile(path):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _find_project_venv_python():
+    """Locate the IdPass venv python (never use system python on Bookworm)."""
+    import sys
+
+    candidates = []
+    searched = []
+
+    exe = getattr(sys, "executable", "") or ""
+    if exe:
+        candidates.append(exe)
+
+    env_venv = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if env_venv:
+        candidates.extend(_venv_python_candidates_in(env_venv))
+
+    for root in _project_search_roots():
+        searched.append(root)
+        candidates.extend(_venv_python_candidates_in(root))
 
     seen = set()
     for path in candidates:
@@ -179,9 +258,70 @@ def _find_project_venv_python():
         if path in seen:
             continue
         seen.add(path)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
+        # Must look like a venv interpreter — never silent system python
+        norm = path.replace("\\", "/")
+        if "/venv/" not in norm and "/.venv/" not in norm:
+            # Allow current exe only when Python itself reports a venv prefix
+            if path == os.path.normpath(exe) and getattr(sys, "base_prefix", sys.prefix) != sys.prefix:
+                return path, searched
+            continue
+        if _is_usable_python(path):
+            return path, searched
+
+    return None, searched
+
+
+def _find_project_root_for_venv():
+    """Best guess at the directory where we should create ./venv."""
+    for root in _project_search_roots():
+        markers = (
+            os.path.join(root, "ota-update.py"),
+            os.path.join(root, "start_nfc_reader.sh"),
+            os.path.join(root, "main", "ota-update.py"),
+            os.path.join(root, "main", "printer.py"),
+        )
+        if any(os.path.isfile(m) for m in markers):
+            # If we're inside main/, use parent
+            if os.path.basename(root) == "main" and os.path.isfile(os.path.join(root, "printer.py")):
+                parent = os.path.dirname(root)
+                if parent and parent != root:
+                    return parent
+            return root
+    # Fallbacks
+    for fallback in ("/home/jdrevnyak/id", os.path.expanduser("~/id"), os.getcwd()):
+        if fallback and os.path.isdir(fallback):
+            return fallback
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _create_project_venv(project_root):
+    """Create a system-site-packages venv so PyQt5 from apt still works."""
+    import subprocess
+    import sys
+
+    venv_dir = os.path.join(project_root, "venv")
+    builder = None
+    for cand in (sys.executable, "/usr/bin/python3", "python3"):
+        if cand and (cand == "python3" or _is_usable_python(cand)):
+            builder = cand
+            break
+    if not builder:
+        return None, "No python3 available to create a venv."
+
+    cmd = [builder, "-m", "venv", "--system-site-packages", venv_dir]
+    print(f"[PRINTER] Creating venv: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except Exception as e:
+        return None, f"venv creation failed: {e}"
+    if result.returncode != 0:
+        detail = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        return None, detail[-800:] or f"venv exited {result.returncode}"
+
+    for path in _venv_python_candidates_in(project_root):
+        if _is_usable_python(path) and "/venv/" in path.replace("\\", "/"):
+            return path, f"Created venv at {venv_dir}"
+    return None, f"venv created at {venv_dir} but python binary not found"
 
 
 def _add_venv_site_packages(venv_python):
@@ -212,54 +352,60 @@ def ensure_printer_packages():
         "qrcode",
     ]
 
-    venv_python = _find_project_venv_python()
+    venv_python, searched = _find_project_venv_python()
+    created_note = ""
     if not venv_python:
-        return (
-            False,
-            "No project venv found. Expected something like /home/jdrevnyak/id/venv/bin/python. "
-            "Start the app with the venv activated (start_nfc_reader.sh / autostart).",
-        )
+        project_root = _find_project_root_for_venv()
+        venv_python, created_note = _create_project_venv(project_root)
+        if not venv_python:
+            searched_txt = "\n".join(f"  - {p}" for p in searched[:12])
+            return (
+                False,
+                "No project venv found and could not create one.\n"
+                f"Create target: {os.path.join(project_root, 'venv')}\n"
+                f"Create error: {created_note}\n"
+                f"Searched:\n{searched_txt}\n"
+                f"Running python: {sys.executable}",
+            )
 
-    # Detect system Python / externally-managed env and refuse that interpreter
-    in_venv = ("venv" in venv_python.replace("\\", "/")) or (
-        getattr(sys, "base_prefix", sys.prefix) != sys.prefix and os.path.normpath(venv_python) == os.path.normpath(sys.executable)
-    )
-    if not in_venv and "venv" not in venv_python.replace("\\", "/"):
-        return (
-            False,
-            f"Refusing to install into non-venv Python:\n{venv_python}\n"
-            "Bookworm blocks system pip (externally-managed-environment).",
-        )
+    cmd = [venv_python, "-m", "pip", "install", "--upgrade", "pip"]
+    # Upgrade pip quietly; ignore failure and continue to package install
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except Exception:
+        pass
 
     cmd = [venv_python, "-m", "pip", "install", *packages]
     print(f"[PRINTER] Installing with {venv_python}: {' '.join(packages)}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except Exception as e:
-        return False, f"pip failed to start: {e}"
+        return False, f"pip failed to start ({venv_python}): {e}"
 
     out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
     if result.returncode != 0:
-        # Last-resort hint if somehow still hitting system python
         if "externally-managed-environment" in out:
             return (
                 False,
-                "pip refused install (externally-managed-environment). "
-                f"Tried: {venv_python}\n"
-                "Fix: run the app from the project venv, then tap Install printer again.\n"
-                f"{out[-500:]}",
+                "pip refused install (externally-managed-environment).\n"
+                f"Tried venv python: {venv_python}\n"
+                "That path is not a real venv. Recreate it with:\n"
+                "  python3 -m venv --system-site-packages /home/jdrevnyak/id/venv\n"
+                f"{out[-400:]}",
             )
-        return False, out[-800:] if out else f"pip exited {result.returncode}"
+        return False, f"pip via {venv_python} failed:\n{(out[-800:] if out else result.returncode)}"
 
     _add_venv_site_packages(venv_python)
     ok = reload_printer_backends()
+    prefix = (created_note + "\n") if created_note else ""
     if not ok:
         return (
             False,
-            f"Packages installed into {venv_python} but python-escpos still cannot be imported. "
-            "Restart the app (quit and reopen).",
+            prefix
+            + f"Packages installed into {venv_python} but python-escpos still cannot be imported. "
+            "Quit and reopen the app.",
         )
-    return True, f"Installed python-escpos into {venv_python}"
+    return True, prefix + f"Installed python-escpos into {venv_python}"
 
 
 def _usb_device_label(dev):

@@ -19,33 +19,69 @@ fi
 PROJECT_DIR=""
 SEARCH="$SCRIPT_DIR"
 while [ "$SEARCH" != "/" ]; do
-    if [ -x "$SEARCH/venv/bin/pip" ]; then
+    if [ -e "$SEARCH/venv/bin/pip" ] || [ -e "$SEARCH/venv/bin/python" ] || [ -e "$SEARCH/venv/bin/python3" ]; then
         PROJECT_DIR="$SEARCH"
         break
     fi
     SEARCH="$(cd "$SEARCH/.." && pwd)"
 done
 
-# Optional: pyusb in the app venv only. Never use system pip
+# Fallbacks for classroom Pi layouts
+if [ -z "$PROJECT_DIR" ]; then
+    for cand in "/home/jdrevnyak/id" "$HOME/id" /home/*/id; do
+        if [ -e "$cand/venv/bin/pip" ] || [ -e "$cand/venv/bin/python3" ]; then
+            PROJECT_DIR="$cand"
+            break
+        fi
+    done
+fi
+
+# Optional: install into the app venv only. Never use system pip
 # (Raspberry Pi OS Bookworm is an externally-managed environment).
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}"
-if [ -n "$PROJECT_DIR" ] && [ -n "$REAL_USER" ]; then
+if [ -z "$PROJECT_DIR" ]; then
+    # Create venv next to the app if missing
+    for cand in "/home/jdrevnyak/id" "$HOME/id" "$(cd "$SCRIPT_DIR/../.." && pwd)" "$(cd "$SCRIPT_DIR/.." && pwd)"; do
+        if [ -f "$cand/ota-update.py" ] || [ -f "$cand/start_nfc_reader.sh" ] || [ -f "$cand/main/printer.py" ]; then
+            PROJECT_DIR="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -n "$PROJECT_DIR" ]; then
+    if [ ! -e "$PROJECT_DIR/venv/bin/python" ] && [ ! -e "$PROJECT_DIR/venv/bin/python3" ]; then
+        echo "Creating venv at $PROJECT_DIR/venv ..."
+        python3 -m venv --system-site-packages "$PROJECT_DIR/venv" \
+            || echo "Warning: could not create venv"
+    fi
+    VENV_PY=""
+    for py in "$PROJECT_DIR/venv/bin/python" "$PROJECT_DIR/venv/bin/python3"; do
+        if [ -e "$py" ]; then
+            VENV_PY="$py"
+            break
+        fi
+    done
     VENV_PIP="$PROJECT_DIR/venv/bin/pip"
-    VENV_PY="$PROJECT_DIR/venv/bin/python"
-    if [ ! -x "$VENV_PIP" ]; then
-        echo "ERROR: venv pip not found at $VENV_PIP"
-        echo "Create the venv first, or start the app via start_nfc_reader.sh."
+    if [ -z "$VENV_PY" ]; then
+        echo "ERROR: venv python not found under $PROJECT_DIR/venv/bin"
     else
-        echo "Installing printer packages with $VENV_PIP (not system pip) ..."
-        sudo -u "$REAL_USER" "$VENV_PIP" install \
-            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
-            || echo "Warning: could not install printer packages; continuing with udev setup."
-        echo "python-escpos check:"
-        sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
-            || echo "Warning: escpos import failed after install."
+        echo "Installing printer packages with $VENV_PY -m pip (not system pip) ..."
+        if [ -n "$REAL_USER" ] && [ "$(id -u)" -eq 0 ]; then
+            sudo -u "$REAL_USER" "$VENV_PY" -m pip install \
+                "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+                || echo "Warning: could not install printer packages; continuing with udev setup."
+            echo "python-escpos check:"
+            sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
+                || echo "Warning: escpos import failed after install."
+        else
+            "$VENV_PY" -m pip install \
+                "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+                || echo "Warning: could not install printer packages; continuing with udev setup."
+        fi
     fi
 else
-    echo "No project venv found; skipping Python package install."
+    echo "No project directory found; skipping Python package install."
 fi
 
 # The app needs to read /dev/usb/lp0 (group lp) and raw USB (group plugdev)
