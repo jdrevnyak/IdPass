@@ -1073,9 +1073,14 @@ class SettingsOverlay(QWidget):
         line_edit.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        """Intercept focus/click events to show the on-screen keyboard."""
+        """Intercept direct taps on text fields to show the on-screen keyboard.
+
+        Only MouseButtonPress — not FocusIn. Otherwise tapping another button
+        (e.g. Updates) steals focus into Classroom ID and opens the keyboard
+        instead of showing the update dialog.
+        """
         if hasattr(self, '_keyboard_fields') and obj in self._keyboard_fields:
-            if event.type() in (QEvent.MouseButtonPress, QEvent.FocusIn):
+            if event.type() == QEvent.MouseButtonPress:
                 if hasattr(self, 'keyboard') and self.keyboard:
                     self.keyboard.show_for(obj, self._keyboard_fields[obj])
         return super().eventFilter(obj, event)
@@ -1167,29 +1172,31 @@ class SettingsOverlay(QWidget):
     def check_for_updates(self):
         """Check for application updates"""
         try:
-            # Check if update manager exists
+            # Don't leave the classroom keyboard covering update dialogs
+            if hasattr(self, "keyboard") and self.keyboard:
+                self.keyboard.hide()
+            focused = QApplication.focusWidget()
+            if focused is not None:
+                focused.clearFocus()
+
             if hasattr(self.parent, 'update_manager') and self.parent.update_manager:
-                # Disable the button temporarily to prevent multiple clicks
                 sender = self.sender()
                 if sender:
                     sender.setEnabled(False)
-                    sender.setText("Checking...")
-                
-                # Check for updates (show_message=True to show result)
+                    sender.setText("Checking…")
+
                 self.parent.update_manager.check_for_updates(show_message=True)
-                
-                # Re-enable the button after a delay
                 QTimer.singleShot(3000, lambda: self.restore_update_button(sender))
             else:
                 QMessageBox.warning(self, "Update Check", "Update manager is not available.")
         except Exception as e:
             QMessageBox.critical(self, "Update Check Error", f"Error checking for updates: {str(e)}")
-    
+
     def restore_update_button(self, button):
         """Restore the update button to its original state"""
         if button:
             button.setEnabled(True)
-            button.setText("Check for Updates")
+            button.setText("Updates")
     
     def update_version_display(self):
         """Update the current version display"""

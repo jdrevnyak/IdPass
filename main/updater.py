@@ -14,7 +14,7 @@ import requests
 import zipfile
 from pathlib import Path
 from datetime import datetime
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
 from PyQt5.QtWidgets import QMessageBox, QProgressDialog
 
 
@@ -298,33 +298,70 @@ class UpdateManager:
         """Check for updates from GitHub"""
         if self.update_checker and self.update_checker.isRunning():
             return
-            
+
+        self._show_update_messages = bool(show_message)
+        self._update_prompted = False
+
         self.update_checker = UpdateChecker(self.current_version, self.repo_owner, self.repo_name)
         self.update_checker.update_available.connect(self.on_update_available)
-        self.update_checker.check_complete.connect(lambda success: self.on_check_complete(success, show_message))
+        self.update_checker.check_complete.connect(self._on_check_complete)
         self.update_checker.start()
-    
+
     def on_update_available(self, update_info):
         """Handle when an update is available"""
+        self._update_prompted = True
         version = update_info['version']
-        release_notes = update_info['release_notes']
-        
-        msg = QMessageBox(self.parent_window)
+        release_notes = update_info['release_notes'] or ""
+
+        # Prefer a top-level dialog so Settings / on-screen keyboard can't cover it
+        parent = self.parent_window
+        try:
+            settings = getattr(parent, "settings_overlay", None)
+            if settings is not None and hasattr(settings, "keyboard") and settings.keyboard:
+                settings.keyboard.hide()
+        except Exception:
+            pass
+
+        msg = QMessageBox(parent)
         msg.setWindowTitle("Update Available")
-        msg.setText(f"Version {version} is available!\n\nRelease Notes:\n{release_notes[:200]}...")
-        msg.setInformativeText("Would you like to download and install this update?")
+        msg.setText(f"Version {version} is available!")
+        notes = release_notes.strip()
+        if notes:
+            msg.setInformativeText(
+                f"Release notes:\n{notes[:400]}{'…' if len(notes) > 400 else ''}\n\n"
+                "Download and install this update?"
+            )
+        else:
+            msg.setInformativeText("Would you like to download and install this update?")
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.Yes)
-        
+        msg.setWindowModality(Qt.ApplicationModal)
+        msg.raise_()
+        msg.activateWindow()
+
         if msg.exec_() == QMessageBox.Yes:
             self.download_and_install_update(update_info)
-    
+
+    def _on_check_complete(self, success):
+        self.on_check_complete(success, getattr(self, "_show_update_messages", True))
+
     def on_check_complete(self, success, show_message):
         """Handle update check completion"""
-        if not success and show_message:
-            QMessageBox.warning(self.parent_window, "Update Check", 
-                              "Failed to check for updates. Please check your internet connection.")
-    
+        if not show_message:
+            return
+        if not success:
+            QMessageBox.warning(
+                self.parent_window,
+                "Update Check",
+                "Failed to check for updates. Please check your internet connection.",
+            )
+            return
+        if not getattr(self, "_update_prompted", False):
+            QMessageBox.information(
+                self.parent_window,
+                "Update Check",
+                f"You're up to date.\n\nCurrent version: {self.current_version}",
+            )    
     def download_and_install_update(self, update_info):
         """Download update to deposit folder"""
         if self.update_downloader and self.update_downloader.isRunning():
