@@ -311,6 +311,12 @@ class NFCReaderGUI(QMainWindow):
             kwargs["bus"] = bus
         if addr is not None:
             kwargs["address"] = addr
+        backend = (config.get("printer_backend") or "").strip()
+        if backend:
+            kwargs["backend_kind"] = backend
+        devfile = (config.get("printer_devfile") or "").strip()
+        if devfile:
+            kwargs["devfile"] = devfile
         return kwargs
 
     def _set_classroom_attributes(self, config, refresh_prompt=True):

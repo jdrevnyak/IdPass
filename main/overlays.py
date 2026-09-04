@@ -939,34 +939,44 @@ class SettingsOverlay(QWidget):
         self.port_combo.addItems(ports)
 
     def refresh_printer_devices(self):
-        """Rescan USB devices for the printer dropdown."""
+        """Rescan USB / serial devices for the printer dropdown."""
         previous = self.printer_combo.currentData()
         self.printer_combo.clear()
         devices = list_usb_devices()
         if not devices:
-            self.printer_combo.addItem("No USB devices found — tap Refresh", None)
+            self.printer_combo.addItem("No USB/serial devices found — tap Refresh", None)
             self.printer_status_label.setText(
-                "No USB devices found. Plug in the printer, wait a few seconds, then Refresh. "
-                "A reboot is not required."
+                "No devices found. Power the printer ON first (battery printers often "
+                "do nothing on USB while powered off), use a data cable, wait a few "
+                "seconds, then Refresh. Look for ttyUSB0 / CH340 / CP210x — not 0416:5011."
             )
             return
 
         preferred_idx = 0
         for i, dev in enumerate(devices):
             self.printer_combo.addItem(dev["label"], dev)
-            if previous and (
-                previous.get("vendor_id") == dev["vendor_id"]
-                and previous.get("product_id") == dev["product_id"]
-                and previous.get("bus") == dev["bus"]
-                and previous.get("address") == dev["address"]
-            ):
-                preferred_idx = i
+            if previous:
+                same_serial = (
+                    previous.get("kind") == "serial"
+                    and previous.get("devfile")
+                    and previous.get("devfile") == dev.get("devfile")
+                )
+                same_usb = (
+                    previous.get("vendor_id") == dev.get("vendor_id")
+                    and previous.get("product_id") == dev.get("product_id")
+                    and previous.get("bus") == dev.get("bus")
+                    and previous.get("address") == dev.get("address")
+                    and previous.get("kind", "usb") == dev.get("kind", "usb")
+                )
+                if same_serial or same_usb:
+                    preferred_idx = i
             elif not previous and dev.get("likely_printer"):
                 preferred_idx = i
         self.printer_combo.setCurrentIndex(preferred_idx)
         current = self.printer_combo.currentData() or {}
         self.printer_status_label.setText(
-            f"{len(devices)} USB device(s). Selected: {current.get('label', 'none')}"
+            f"{len(devices)} device(s). Selected: {current.get('label', 'none')}. "
+            "Portable minis usually appear as ttyUSB0 / CH340 — pick that, then Test."
         )
 
     def _apply_selected_printer(self, connect=False):
@@ -977,21 +987,25 @@ class SettingsOverlay(QWidget):
         data = self.printer_combo.currentData() if hasattr(self, "printer_combo") else None
         if printer is None or not data:
             return
-        vid = data.get("vendor_id")
-        pid = data.get("product_id")
+        vid = data.get("vendor_id") or 0
+        pid = data.get("product_id") or 0
         bus = data.get("bus")
         addr = data.get("address")
+        kind = data.get("kind") or "auto"
+        devfile = data.get("devfile") or ""
         printer.vendor_id = vid
         printer.product_id = pid
         printer.bus = bus
         printer.address = addr
-        printer.backend_kind = data.get("kind") or "auto"
-        printer.devfile = data.get("devfile")
+        printer.backend_kind = kind
+        printer.devfile = devfile or None
         update_device_config(
             printer_vendor_id=f"0x{int(vid):04x}",
             printer_product_id=f"0x{int(pid):04x}",
             printer_bus="" if bus is None else str(bus),
             printer_address="" if addr is None else str(addr),
+            printer_backend=kind,
+            printer_devfile=devfile,
         )
         if connect:
             printer.reconnect()
@@ -1408,8 +1422,8 @@ class SettingsOverlay(QWidget):
                 self,
                 "Printer Test",
                 f"{detail}\n\n"
-                "Pick the 0416:5011 thermal printer in the USB list, tap Refresh after plugging it in, "
-                "then try Test printer again. A reboot is not required.",
+                "Pick the serial entry marked ← try this (often ttyUSB0 / CH340 / CP210x), "
+                "not necessarily 0416:5011. Power the printer ON first, then Refresh and Test again.",
             )
 
     def run_printer_diagnostics(self):

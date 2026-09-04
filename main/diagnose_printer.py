@@ -92,6 +92,11 @@ def _system_info(r):
     )
 
     r.write()
+    r.write("-- portable printer tip --")
+    r.write("Battery BT/USB minis usually show as /dev/ttyUSB0 (CH340), not 0416:5011.")
+    r.write("Power ON the printer before plugging USB; charge-only cables will not enumerate.")
+
+    r.write()
     r.write("-- recent kernel messages --")
     r.write(sh("dmesg 2>/dev/null | tail -20") or "(dmesg not readable without root)")
 
@@ -116,7 +121,7 @@ def _test_lp_node(r):
 
 
 def _test_serial(r):
-    r.section("3. TEST: serial port (virtual COM)")
+    r.section("3. TEST: serial port (virtual COM / CH340 / CP210x)")
     try:
         import serial
         import serial.tools.list_ports
@@ -124,25 +129,44 @@ def _test_serial(r):
         r.write("SKIP: pyserial not installed.")
         return False
 
-    ports = [
-        p.device
-        for p in serial.tools.list_ports.comports()
-        if p.vid == VID and p.pid == PID
-    ]
+    ports = list(serial.tools.list_ports.comports())
     if not ports:
-        r.write("SKIP: no serial port with 0416:5011.")
+        r.write("SKIP: no serial ports at all.")
+        r.write("      Portable battery printers usually appear as /dev/ttyUSB0 (CH340).")
+        r.write("      Power the printer ON, use a data Mini-USB cable, then re-run.")
         return False
 
-    for port in ports:
-        for baud in (9600, 19200, 38400, 115200):
+    r.write("Serial ports found:")
+    for p in ports:
+        vid = f"{p.vid:04x}" if p.vid is not None else "----"
+        pid = f"{p.pid:04x}" if p.pid is not None else "----"
+        r.write(f"  {p.device}  {vid}:{pid}  {p.description}")
+
+    # Prefer known printer chips, then any ttyUSB/ttyACM, then everything else
+    ranked = []
+    for p in ports:
+        score = 2
+        if p.vid is not None and p.pid is not None and (int(p.vid), int(p.pid)) in {
+            (0x0416, 0x5011), (0x1A86, 0x7523), (0x1A86, 0x5523), (0x1A86, 0x55D4),
+            (0x10C4, 0xEA60), (0x10C4, 0xEA61), (0x0403, 0x6001), (0x0403, 0x6015),
+            (0x067B, 0x2303), (0x0483, 0x5740),
+        }:
+            score = 0
+        elif p.device.startswith(("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")):
+            score = 1
+        ranked.append((score, p))
+    ranked.sort(key=lambda x: (x[0], x[1].device))
+
+    for _score, p in ranked:
+        for baud in (9600, 115200, 19200, 38400):
             try:
-                with serial.Serial(port, baud, timeout=2, write_timeout=5) as s:
+                with serial.Serial(p.device, baud, timeout=2, write_timeout=5) as s:
                     s.write(TEST_BYTES)
                     s.flush()
-                r.write(f"SUCCESS: wrote to {port} @ {baud}")
+                r.write(f"SUCCESS: wrote to {p.device} @ {baud}")
                 return True
             except Exception as e:
-                r.write(f"FAILED {port}@{baud}: {type(e).__name__}: {e}")
+                r.write(f"FAILED {p.device}@{baud}: {type(e).__name__}: {e}")
     return False
 
 

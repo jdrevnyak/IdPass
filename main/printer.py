@@ -22,6 +22,40 @@ import os
 DEFAULT_VENDOR_ID = 0x0416
 DEFAULT_PRODUCT_ID = 0x5011
 
+# Portable 58mm BT/USB minis almost always use a USB-serial bridge, not USB printer class.
+_LIKELY_SERIAL_CHIPS = {
+    (0x0416, 0x5011),  # Symcode / Winbond USB printer (also sometimes serial)
+    (0x1A86, 0x7523),  # CH340
+    (0x1A86, 0x5523),  # CH341
+    (0x1A86, 0x55D4),  # CH9102
+    (0x10C4, 0xEA60),  # Silicon Labs CP210x
+    (0x10C4, 0xEA61),
+    (0x0403, 0x6001),  # FTDI FT232
+    (0x0403, 0x6015),  # FTDI FT231X
+    (0x067B, 0x2303),  # Prolific PL2303
+    (0x0483, 0x5740),  # STM CDC virtual COM
+}
+
+_SERIAL_CHIP_NAMES = {
+    (0x1A86, 0x7523): "CH340",
+    (0x1A86, 0x5523): "CH341",
+    (0x1A86, 0x55D4): "CH9102",
+    (0x10C4, 0xEA60): "CP210x",
+    (0x10C4, 0xEA61): "CP210x",
+    (0x0403, 0x6001): "FTDI",
+    (0x0403, 0x6015): "FTDI",
+    (0x067B, 0x2303): "PL2303",
+    (0x0483, 0x5740): "CDC ACM",
+    (0x0416, 0x5011): "thermal printer",
+}
+
+
+def _is_likely_printer_ids(vid, pid):
+    try:
+        return (int(vid), int(pid)) in _LIKELY_SERIAL_CHIPS
+    except Exception:
+        return False
+
 
 def _usb_device_label(dev):
     vid = int(dev.idVendor)
@@ -29,32 +63,79 @@ def _usb_device_label(dev):
     bus = getattr(dev, "bus", None)
     addr = getattr(dev, "address", None)
     loc = f"{bus}:{addr}" if bus is not None and addr is not None else "?"
-    extra = "  thermal printer" if vid == DEFAULT_VENDOR_ID and pid == DEFAULT_PRODUCT_ID else ""
+    chip = _SERIAL_CHIP_NAMES.get((vid, pid))
+    extra = f"  {chip}" if chip else ""
+    if _is_likely_printer_ids(vid, pid) and not chip:
+        extra = "  likely printer"
     return f"{loc}  {vid:04x}:{pid:04x}{extra}"
 
 
+def _serial_port_label(port):
+    vid = getattr(port, "vid", None)
+    pid = getattr(port, "pid", None)
+    chip = None
+    if vid is not None and pid is not None:
+        chip = _SERIAL_CHIP_NAMES.get((int(vid), int(pid)))
+        ids = f"{int(vid):04x}:{int(pid):04x}"
+    else:
+        ids = "no-id"
+    desc = (getattr(port, "description", None) or "").strip()
+    if desc and desc.lower() not in ("n/a", "unknown"):
+        name = desc
+    elif chip:
+        name = chip
+    else:
+        name = "serial"
+    tag = "  ← try this" if _is_likely_printer_ids(vid, pid) else ""
+    return f"{port.device}  {name}  {ids}{tag}"
+
+
 def list_usb_devices():
-    """USB devices plus serial/lp nodes this printer often uses on a Pi."""
+    """USB devices plus serial/lp nodes portable thermal printers use on a Pi."""
     devices = _list_raw_usb_devices()
     extras = []
+    seen_serial = set()
     try:
         import serial.tools.list_ports
         for p in serial.tools.list_ports.comports():
-            if p.vid is None or p.pid is None:
+            path = getattr(p, "device", None) or ""
+            if not path or path.endswith("debugconsole"):
                 continue
-            if int(p.vid) == DEFAULT_VENDOR_ID and int(p.pid) == DEFAULT_PRODUCT_ID:
-                extras.append({
-                    "kind": "serial",
-                    "devfile": p.device,
-                    "vendor_id": int(p.vid),
-                    "product_id": int(p.pid),
-                    "bus": None,
-                    "address": None,
-                    "label": f"{p.device}  serial  {p.vid:04x}:{p.pid:04x}",
-                    "likely_printer": True,
-                })
+            if path in seen_serial:
+                continue
+            seen_serial.add(path)
+            vid = int(p.vid) if p.vid is not None else None
+            pid = int(p.pid) if p.pid is not None else None
+            extras.append({
+                "kind": "serial",
+                "devfile": path,
+                "vendor_id": vid if vid is not None else 0,
+                "product_id": pid if pid is not None else 0,
+                "bus": None,
+                "address": None,
+                "label": _serial_port_label(p),
+                "likely_printer": _is_likely_printer_ids(vid, pid) or path.startswith(
+                    ("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")
+                ),
+            })
     except Exception as e:
         print(f"[PRINTER] Serial scan failed: {e}")
+
+    # Bluetooth SPP bindings created with rfcomm
+    for rf in sorted(glob.glob("/dev/rfcomm*")):
+        if rf in seen_serial:
+            continue
+        extras.append({
+            "kind": "serial",
+            "devfile": rf,
+            "vendor_id": 0,
+            "product_id": 0,
+            "bus": None,
+            "address": None,
+            "label": f"{rf}  Bluetooth serial  ← try this",
+            "likely_printer": True,
+        })
+
     for lp in sorted(glob.glob("/dev/usb/lp*")):
         extras.append({
             "kind": "file",
@@ -63,13 +144,15 @@ def list_usb_devices():
             "product_id": DEFAULT_PRODUCT_ID,
             "bus": None,
             "address": None,
-            "label": f"{lp}  USB printer port",
+            "label": f"{lp}  USB printer port  ← try this",
             "likely_printer": True,
         })
     for d in devices:
         d.setdefault("kind", "usb")
         d.setdefault("devfile", None)
-    return extras + devices
+    combined = extras + devices
+    combined.sort(key=lambda d: (not d.get("likely_printer"), d.get("label") or ""))
+    return combined
 
 
 def _list_raw_usb_devices():
@@ -96,7 +179,7 @@ def _list_raw_usb_devices():
                 "bus": bus,
                 "address": addr,
                 "label": _usb_device_label(dev),
-                "likely_printer": vid == DEFAULT_VENDOR_ID and pid == DEFAULT_PRODUCT_ID,
+                "likely_printer": _is_likely_printer_ids(vid, pid),
             })
         except Exception as e:
             print(f"[PRINTER] Skipping USB device: {e}")
@@ -162,6 +245,8 @@ class ThermalPrinter:
         profile="TM-T88II",
         bus=None,
         address=None,
+        backend_kind="auto",
+        devfile=None,
     ):
         self.vendor_id = vendor_id
         self.product_id = product_id
@@ -169,8 +254,8 @@ class ThermalPrinter:
         self.address = address
         self.profile = profile
         self.printer = None
-        self.backend_kind = "auto"
-        self.devfile = None
+        self.backend_kind = backend_kind or "auto"
+        self.devfile = devfile or None
         self.last_pass_params = None
         self.last_error = ""
         self.usb_timeout_ms = 8000
@@ -244,24 +329,50 @@ class ThermalPrinter:
 
     def _try_serial(self, devfile, baudrate=9600):
         print(f"[PRINTER] Trying serial {devfile} @ {baudrate}")
-        return EscposSerial(devfile=devfile, baudrate=baudrate, timeout=1, dsrdtr=False)
+        return EscposSerial(
+            devfile=devfile,
+            baudrate=baudrate,
+            bytesize=8,
+            parity="N",
+            stopbits=1,
+            timeout=1,
+            dsrdtr=False,
+        )
 
     def _try_file(self, devfile):
         print(f"[PRINTER] Trying file {devfile}")
         return EscposFile(devfile=devfile, auto_flush=True)
 
-    def _matching_serial_ports(self):
+    def _candidate_serial_ports(self):
+        """Serial ports to try: selected device first, then likely printer chips."""
         ports = []
+        if self.backend_kind == "serial" and self.devfile:
+            ports.append(self.devfile)
         try:
             import serial.tools.list_ports
             for p in serial.tools.list_ports.comports():
-                if p.vid is None or p.pid is None:
+                path = getattr(p, "device", None)
+                if not path or path in ports:
                     continue
-                if int(p.vid) == int(self.vendor_id) and int(p.pid) == int(self.product_id):
-                    ports.append(p.device)
+                vid = int(p.vid) if p.vid is not None else None
+                pid = int(p.pid) if p.pid is not None else None
+                if self.vendor_id and self.product_id and vid is not None and pid is not None:
+                    if int(vid) == int(self.vendor_id) and int(pid) == int(self.product_id):
+                        ports.append(path)
+                        continue
+                if _is_likely_printer_ids(vid, pid) or path.startswith(
+                    ("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")
+                ):
+                    ports.append(path)
         except Exception as e:
             print(f"[PRINTER] Serial port scan: {e}")
+        for rf in sorted(glob.glob("/dev/rfcomm*")):
+            if rf not in ports:
+                ports.append(rf)
         return ports
+
+    def _matching_serial_ports(self):
+        return self._candidate_serial_ports()
 
     def _connect(self):
         if not PRINTER_LIB_AVAILABLE:
@@ -273,12 +384,13 @@ class ThermalPrinter:
         errors = []
 
         if self.backend_kind == "serial" and self.devfile:
-            try:
-                self.printer = self._try_serial(self.devfile)
-                print(f"[PRINTER] Connected via serial {self.devfile}")
-                return
-            except Exception as e:
-                errors.append(f"serial {self.devfile}: {e}")
+            for baud in (9600, 115200, 19200, 38400):
+                try:
+                    self.printer = self._try_serial(self.devfile, baud)
+                    print(f"[PRINTER] Connected via serial {self.devfile} @ {baud}")
+                    return
+                except Exception as e:
+                    errors.append(f"serial {self.devfile}@{baud}: {e}")
 
         if self.backend_kind == "file" and self.devfile:
             try:
@@ -288,8 +400,10 @@ class ThermalPrinter:
             except Exception as e:
                 errors.append(f"file {self.devfile}: {e}")
 
-        for port in self._matching_serial_ports():
-            for baud in (9600, 19200, 115200):
+        for port in self._candidate_serial_ports():
+            if self.backend_kind == "serial" and self.devfile and port == self.devfile:
+                continue  # already tried above
+            for baud in (9600, 115200, 19200, 38400):
                 try:
                     self.printer = self._try_serial(port, baud)
                     self.backend_kind = "serial"

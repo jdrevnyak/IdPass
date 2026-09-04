@@ -15,6 +15,8 @@ DEFAULT_CONFIG = {
     "printer_product_id": "0x5011",
     "printer_bus": "",
     "printer_address": "",
+    "printer_backend": "",
+    "printer_devfile": "",
 }
 
 CONFIG_FILENAME = "device_config.json"
