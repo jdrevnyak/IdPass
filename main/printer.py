@@ -144,169 +144,119 @@ def reload_printer_backends():
     return ESCPOS_AVAILABLE
 
 
-def _project_search_roots():
-    """Directories that may contain the IdPass venv."""
-    import sys
+def _home_dir():
+    return os.path.expanduser("~") or "/home/jdrevnyak"
 
-    roots = []
-    env_root = (os.environ.get("VIRTUAL_ENV") or "").strip()
-    if env_root:
-        roots.append(env_root if os.path.basename(env_root) != "venv" else os.path.dirname(env_root))
-        roots.append(env_root)
 
+def _known_venv_dirs():
+    """Venv locations used across classroom Pis (layouts differ by device)."""
+    home = _home_dir()
+    dirs = [
+        "/home/jdrevnyak/id/venv",
+        "/home/jdrevnyak/venv",  # some devices use home-level venv
+        os.path.join(home, "id", "venv"),
+        os.path.join(home, "venv"),
+    ]
+    # Project-relative: .../id/venv next to main/printer.py
     here = os.path.dirname(os.path.abspath(__file__))
-    roots.append(here)
-    roots.append(os.getcwd())
+    if os.path.basename(here) == "main":
+        dirs.insert(0, os.path.join(os.path.dirname(here), "venv"))
+    else:
+        dirs.insert(0, os.path.join(here, "venv"))
+    cwd = os.getcwd()
+    dirs.append(os.path.join(cwd, "venv"))
+    if os.path.basename(cwd) == "main":
+        dirs.append(os.path.join(os.path.dirname(cwd), "venv"))
+    env = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if env:
+        dirs.insert(0, env)
 
-    # Walk parents of this file (main/printer.py -> project root)
-    search = here
-    for _ in range(8):
-        roots.append(search)
-        parent = os.path.dirname(search)
-        if parent == search:
-            break
-        search = parent
-
-    # Common classroom Pi layouts
-    roots.extend(
-        [
-            "/home/jdrevnyak/id",
-            os.path.expanduser("~/id"),
-        ]
-    )
-    try:
-        roots.extend(glob.glob("/home/*/id"))
-    except Exception:
-        pass
-
-    # Dedupe while preserving order
-    out = []
-    seen = set()
-    for root in roots:
-        if not root:
+    out, seen = [], set()
+    for d in dirs:
+        if not d:
             continue
-        root = os.path.normpath(root)
-        if root in seen:
+        d = os.path.normpath(d)
+        if d in seen:
             continue
-        seen.add(root)
-        out.append(root)
+        seen.add(d)
+        out.append(d)
     return out
 
 
-def _venv_python_candidates_in(root):
-    """Return possible python binaries under a project/venv root."""
-    paths = []
-    # root is already the venv directory
-    paths.extend(
-        [
-            os.path.join(root, "bin", "python"),
-            os.path.join(root, "bin", "python3"),
-            os.path.join(root, "Scripts", "python.exe"),
-        ]
-    )
-    # root is the project directory containing venv/
-    paths.extend(
-        [
-            os.path.join(root, "venv", "bin", "python"),
-            os.path.join(root, "venv", "bin", "python3"),
-            os.path.join(root, ".venv", "bin", "python"),
-            os.path.join(root, "venv", "Scripts", "python.exe"),
-        ]
-    )
-    for pattern in (
-        os.path.join(root, "bin", "python3.*"),
-        os.path.join(root, "venv", "bin", "python3.*"),
-        os.path.join(root, ".venv", "bin", "python3.*"),
-    ):
-        paths.extend(sorted(glob.glob(pattern)))
-    return paths
+def _python_bins_in_venv(venv_dir):
+    bins = [
+        os.path.join(venv_dir, "bin", "python"),
+        os.path.join(venv_dir, "bin", "python3"),
+        os.path.join(venv_dir, "Scripts", "python.exe"),
+    ]
+    bins.extend(sorted(glob.glob(os.path.join(venv_dir, "bin", "python3.*"))))
+    return bins
 
 
-def _is_usable_python(path):
+def _python_is_runnable(path):
+    import subprocess
     if not path:
         return False
     try:
-        if os.path.islink(path) or os.path.isfile(path):
-            return True
+        if not (os.path.isfile(path) or os.path.islink(path)):
+            return False
     except Exception:
         return False
-    return False
+    try:
+        result = subprocess.run(
+            [path, "-c", "import sys; print(sys.prefix)"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def _find_project_venv_python():
-    """Locate the IdPass venv python (never use system python on Bookworm)."""
-    import sys
-
-    candidates = []
+    """Return (python_path_or_None, searched_venv_dirs)."""
     searched = []
-
-    exe = getattr(sys, "executable", "") or ""
-    if exe:
-        candidates.append(exe)
-
-    env_venv = (os.environ.get("VIRTUAL_ENV") or "").strip()
-    if env_venv:
-        candidates.extend(_venv_python_candidates_in(env_venv))
-
-    for root in _project_search_roots():
-        searched.append(root)
-        candidates.extend(_venv_python_candidates_in(root))
-
-    seen = set()
-    for path in candidates:
-        path = os.path.normpath(path)
-        if path in seen:
-            continue
-        seen.add(path)
-        # Must look like a venv interpreter — never silent system python
-        norm = path.replace("\\", "/")
-        if "/venv/" not in norm and "/.venv/" not in norm:
-            # Allow current exe only when Python itself reports a venv prefix
-            if path == os.path.normpath(exe) and getattr(sys, "base_prefix", sys.prefix) != sys.prefix:
+    for venv_dir in _known_venv_dirs():
+        searched.append(venv_dir)
+        for path in _python_bins_in_venv(venv_dir):
+            if _python_is_runnable(path):
+                print(f"[PRINTER] Using venv python: {path}")
                 return path, searched
-            continue
-        if _is_usable_python(path):
-            return path, searched
-
     return None, searched
 
 
-def _find_project_root_for_venv():
-    """Best guess at the directory where we should create ./venv."""
-    for root in _project_search_roots():
-        markers = (
-            os.path.join(root, "ota-update.py"),
-            os.path.join(root, "start_nfc_reader.sh"),
-            os.path.join(root, "main", "ota-update.py"),
-            os.path.join(root, "main", "printer.py"),
-        )
-        if any(os.path.isfile(m) for m in markers):
-            # If we're inside main/, use parent
-            if os.path.basename(root) == "main" and os.path.isfile(os.path.join(root, "printer.py")):
-                parent = os.path.dirname(root)
-                if parent and parent != root:
-                    return parent
-            return root
-    # Fallbacks
-    for fallback in ("/home/jdrevnyak/id", os.path.expanduser("~/id"), os.getcwd()):
-        if fallback and os.path.isdir(fallback):
-            return fallback
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _create_project_venv(project_root):
-    """Create a system-site-packages venv so PyQt5 from apt still works."""
+def _create_venv_at(venv_dir):
+    """Create or recreate a system-site-packages venv at venv_dir."""
+    import shutil
     import subprocess
     import sys
 
-    venv_dir = os.path.join(project_root, "venv")
-    builder = None
-    for cand in (sys.executable, "/usr/bin/python3", "python3"):
-        if cand and (cand == "python3" or _is_usable_python(cand)):
-            builder = cand
-            break
-    if not builder:
-        return None, "No python3 available to create a venv."
+    builder = "/usr/bin/python3"
+    if not os.path.isfile(builder):
+        builder = "python3"
+
+    # Broken leftover (permission denied) -> remove and recreate
+    if os.path.isdir(venv_dir):
+        runnable = any(_python_is_runnable(p) for p in _python_bins_in_venv(venv_dir))
+        if not runnable:
+            print(f"[PRINTER] Removing broken venv at {venv_dir}")
+            try:
+                shutil.rmtree(venv_dir)
+            except Exception as e:
+                # Often owned by root from an earlier sudo attempt
+                try:
+                    subprocess.run(
+                        ["sudo", "rm", "-rf", venv_dir],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                except Exception:
+                    return None, f"Could not remove broken venv {venv_dir}: {e}"
+
+    parent = os.path.dirname(venv_dir)
+    if parent:
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception:
+            pass
 
     cmd = [builder, "-m", "venv", "--system-site-packages", venv_dir]
     print(f"[PRINTER] Creating venv: {' '.join(cmd)}")
@@ -314,18 +264,54 @@ def _create_project_venv(project_root):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     except Exception as e:
         return None, f"venv creation failed: {e}"
+
+    if result.returncode != 0:
+        # Retry with sudo -u so ownership matches the desktop user
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "jdrevnyak"
+        sudo_cmd = ["sudo", "-u", user, builder, "-m", "venv", "--system-site-packages", venv_dir]
+        print(f"[PRINTER] Retry creating venv as {user}: {' '.join(sudo_cmd)}")
+        try:
+            result = subprocess.run(sudo_cmd, capture_output=True, text=True, timeout=180)
+        except Exception as e:
+            detail = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+            return None, f"venv creation failed: {e}; earlier: {detail[-400:]}"
+
     if result.returncode != 0:
         detail = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
         return None, detail[-800:] or f"venv exited {result.returncode}"
 
-    for path in _venv_python_candidates_in(project_root):
-        if _is_usable_python(path) and "/venv/" in path.replace("\\", "/"):
+    for path in _python_bins_in_venv(venv_dir):
+        if _python_is_runnable(path):
             return path, f"Created venv at {venv_dir}"
-    return None, f"venv created at {venv_dir} but python binary not found"
+    return None, f"venv created at {venv_dir} but python is not runnable"
+
+
+def _ensure_home_venv():
+    """Ensure /home/jdrevnyak/venv (or ~/venv) exists and is runnable."""
+    home = _home_dir()
+    targets = []
+    # Prefer device-specific path the user asked for
+    if os.path.isdir("/home/jdrevnyak") or home.replace("\\", "/").endswith("/jdrevnyak"):
+        targets.append("/home/jdrevnyak/venv")
+    targets.append(os.path.join(home, "venv"))
+    # Also keep supporting the standard id/venv layout
+    targets.append("/home/jdrevnyak/id/venv")
+    targets.append(os.path.join(home, "id", "venv"))
+
+    notes = []
+    for venv_dir in targets:
+        for path in _python_bins_in_venv(venv_dir):
+            if _python_is_runnable(path):
+                return path, ""
+        path, note = _create_venv_at(venv_dir)
+        if path:
+            return path, note
+        notes.append(f"{venv_dir}: {note}")
+    return None, " | ".join(notes)
 
 
 def _add_venv_site_packages(venv_python):
-    """Make packages installed into the project venv importable in this process."""
+    """Make packages installed into the venv importable in this process."""
     import sys
 
     venv_root = os.path.dirname(os.path.dirname(os.path.abspath(venv_python)))
@@ -333,14 +319,13 @@ def _add_venv_site_packages(venv_python):
         if site not in sys.path:
             sys.path.insert(0, site)
             print(f"[PRINTER] Added to sys.path: {site}")
-    # Windows venv layout
     win_site = os.path.join(venv_root, "Lib", "site-packages")
     if os.path.isdir(win_site) and win_site not in sys.path:
         sys.path.insert(0, win_site)
 
 
 def ensure_printer_packages():
-    """Install printer deps into the project venv (never system Python)."""
+    """Install printer deps into a project/home venv (never system Python)."""
     import subprocess
     import sys
 
@@ -355,23 +340,23 @@ def ensure_printer_packages():
     venv_python, searched = _find_project_venv_python()
     created_note = ""
     if not venv_python:
-        project_root = _find_project_root_for_venv()
-        venv_python, created_note = _create_project_venv(project_root)
+        # Create /home/jdrevnyak/venv when missing (this device layout)
+        venv_python, created_note = _ensure_home_venv()
         if not venv_python:
             searched_txt = "\n".join(f"  - {p}" for p in searched[:12])
             return (
                 False,
-                "No project venv found and could not create one.\n"
-                f"Create target: {os.path.join(project_root, 'venv')}\n"
+                "No usable venv found and could not create /home/jdrevnyak/venv.\n"
                 f"Create error: {created_note}\n"
                 f"Searched:\n{searched_txt}\n"
                 f"Running python: {sys.executable}",
             )
 
-    cmd = [venv_python, "-m", "pip", "install", "--upgrade", "pip"]
-    # Upgrade pip quietly; ignore failure and continue to package install
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        subprocess.run(
+            [venv_python, "-m", "pip", "install", "--upgrade", "pip"],
+            capture_output=True, text=True, timeout=180,
+        )
     except Exception:
         pass
 
@@ -379,6 +364,18 @@ def ensure_printer_packages():
     print(f"[PRINTER] Installing with {venv_python}: {' '.join(packages)}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except PermissionError as e:
+        print(f"[PRINTER] Permission denied on {venv_python}; recreating home venv")
+        venv_python, created_note = _ensure_home_venv()
+        if not venv_python:
+            return False, f"Permission denied and recreate failed: {e}"
+        try:
+            result = subprocess.run(
+                [venv_python, "-m", "pip", "install", *packages],
+                capture_output=True, text=True, timeout=300,
+            )
+        except Exception as e2:
+            return False, f"pip failed after recreate ({venv_python}): {e2}"
     except Exception as e:
         return False, f"pip failed to start ({venv_python}): {e}"
 
@@ -388,10 +385,7 @@ def ensure_printer_packages():
             return (
                 False,
                 "pip refused install (externally-managed-environment).\n"
-                f"Tried venv python: {venv_python}\n"
-                "That path is not a real venv. Recreate it with:\n"
-                "  python3 -m venv --system-site-packages /home/jdrevnyak/id/venv\n"
-                f"{out[-400:]}",
+                f"Tried: {venv_python}\n{out[-400:]}",
             )
         return False, f"pip via {venv_python} failed:\n{(out[-800:] if out else result.returncode)}"
 
@@ -406,7 +400,6 @@ def ensure_printer_packages():
             "Quit and reopen the app.",
         )
     return True, prefix + f"Installed python-escpos into {venv_python}"
-
 
 def _usb_device_label(dev):
     vid = int(dev.idVendor)
@@ -907,13 +900,13 @@ class ThermalPrinter:
             )
             qr.add_data(str(student_id))
             qr.make(fit=True)
-
+            
             img_wrapper = qr.make_image(fill_color="black", back_color="white")
             img_buffer = io.BytesIO()
             img_wrapper.save(img_buffer, format="PNG")
             img_buffer.seek(0)
             pil_img = Image.open(img_buffer)
-
+            
             self.printer.image(pil_img)
             self.printer.text("Scan to Return\n")
             for _ in range(5):
@@ -922,7 +915,7 @@ class ThermalPrinter:
                 self.printer.cut()
             except Exception:
                 pass
-
+            
             self.last_pass_params = {
                 "student_name": student_name,
                 "student_id": student_id,
@@ -962,7 +955,7 @@ class ThermalPrinter:
             if not ok:
                 self.last_error = f"python-escpos is not installed ({msg})"
                 print(f"[PRINTER] Test skipped: {self.last_error}")
-                return False
+            return False
 
         if not self.reconnect():
             if not self.last_error:
