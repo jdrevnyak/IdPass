@@ -317,6 +317,9 @@ class NFCReaderGUI(QMainWindow):
         devfile = (config.get("printer_devfile") or "").strip()
         if devfile:
             kwargs["devfile"] = devfile
+        baud = cls._parse_optional_int(config.get("printer_baudrate"))
+        if baud is not None:
+            kwargs["baudrate"] = baud
         return kwargs
 
     def _set_classroom_attributes(self, config, refresh_prompt=True):

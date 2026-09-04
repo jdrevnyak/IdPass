@@ -941,6 +941,16 @@ class SettingsOverlay(QWidget):
     def refresh_printer_devices(self):
         """Rescan USB / serial devices for the printer dropdown."""
         previous = self.printer_combo.currentData()
+        printer = getattr(self.parent, "printer", None)
+        if (not previous or not previous.get("devfile")) and printer and getattr(printer, "devfile", None):
+            previous = {
+                "kind": getattr(printer, "backend_kind", "serial") or "serial",
+                "devfile": printer.devfile,
+                "vendor_id": getattr(printer, "vendor_id", None),
+                "product_id": getattr(printer, "product_id", None),
+                "bus": getattr(printer, "bus", None),
+                "address": getattr(printer, "address", None),
+            }
         self.printer_combo.clear()
         devices = list_usb_devices()
         if not devices:
@@ -948,7 +958,7 @@ class SettingsOverlay(QWidget):
             self.printer_status_label.setText(
                 "No devices found. Power the printer ON first (battery printers often "
                 "do nothing on USB while powered off), use a data cable, wait a few "
-                "seconds, then Refresh. Look for ttyUSB0 / CH340 / CP210x — not 0416:5011."
+                "seconds, then Refresh. Look for ttyUSB0 / ttyACM0 / CH340 — not 0416:5011."
             )
             return
 
@@ -957,8 +967,7 @@ class SettingsOverlay(QWidget):
             self.printer_combo.addItem(dev["label"], dev)
             if previous:
                 same_serial = (
-                    previous.get("kind") == "serial"
-                    and previous.get("devfile")
+                    previous.get("devfile")
                     and previous.get("devfile") == dev.get("devfile")
                 )
                 same_usb = (
@@ -967,6 +976,7 @@ class SettingsOverlay(QWidget):
                     and previous.get("bus") == dev.get("bus")
                     and previous.get("address") == dev.get("address")
                     and previous.get("kind", "usb") == dev.get("kind", "usb")
+                    and not previous.get("devfile")
                 )
                 if same_serial or same_usb:
                     preferred_idx = i
@@ -976,7 +986,7 @@ class SettingsOverlay(QWidget):
         current = self.printer_combo.currentData() or {}
         self.printer_status_label.setText(
             f"{len(devices)} device(s). Selected: {current.get('label', 'none')}. "
-            "Portable minis usually appear as ttyUSB0 / CH340 — pick that, then Test."
+            "Portable minis usually appear as ttyACM0 / ttyUSB0 — pick that, then Test."
         )
 
     def _apply_selected_printer(self, connect=False):
@@ -1006,6 +1016,7 @@ class SettingsOverlay(QWidget):
             printer_address="" if addr is None else str(addr),
             printer_backend=kind,
             printer_devfile=devfile,
+            printer_baudrate=str(getattr(printer, "baudrate", "") or ""),
         )
         if connect:
             printer.reconnect()
@@ -1461,17 +1472,54 @@ class SettingsOverlay(QWidget):
             return
 
         results = extra if isinstance(extra, dict) else {}
-        works = [name for name, ok in results.items() if ok]
+        works = [
+            name for name, ok in results.items()
+            if ok and name in ("/dev/usb/lp*", "serial", "pyusb bulk")
+        ]
         if hasattr(self, "printer_status_label"):
             if works:
                 self.printer_status_label.setText("Diagnostics: " + ", ".join(works) + " WORKS.")
             else:
                 self.printer_status_label.setText("Diagnostics: no write path succeeded. See the report.")
 
+        # Auto-bind the working serial port so Test printer / hall passes use it
+        # (portable printers often need ttyACM0 / ttyUSB0, not raw pyusb).
+        if results.get("serial") and results.get("serial_devfile"):
+            self._apply_serial_printer(
+                results["serial_devfile"],
+                baud=results.get("serial_baud") or 9600,
+            )
+            if hasattr(self, "printer_status_label"):
+                self.printer_status_label.setText(
+                    f"Using serial {results['serial_devfile']} "
+                    f"@ {results.get('serial_baud') or 9600}. Tap Test printer to confirm."
+                )
+            self.refresh_printer_devices()
+
         saved = self._save_printer_diag_report(report)
         if saved:
             report = report.rstrip() + f"\n\nReport also saved to:\n{saved}\n"
         self._show_printer_diag_dialog(report)
+
+    def _apply_serial_printer(self, devfile, baud=9600):
+        """Configure ThermalPrinter for a known-good serial path and persist it."""
+        from device_config import update_device_config
+
+        printer = getattr(self.parent, "printer", None)
+        if printer is None or not devfile:
+            return
+        printer.backend_kind = "serial"
+        printer.devfile = devfile
+        printer.baudrate = int(baud) if baud else 9600
+        printer.bus = None
+        printer.address = None
+        update_device_config(
+            printer_backend="serial",
+            printer_devfile=devfile,
+            printer_baudrate=str(int(baud) if baud else 9600),
+            printer_bus="",
+            printer_address="",
+        )
 
     def _save_printer_diag_report(self, report):
         here = os.path.dirname(os.path.abspath(__file__))

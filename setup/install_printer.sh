@@ -30,9 +30,10 @@ done
 # (Raspberry Pi OS Bookworm is an externally-managed environment).
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}"
 if [ -n "$PROJECT_DIR" ] && [ -n "$REAL_USER" ]; then
-    echo "Ensuring pyusb is installed in $PROJECT_DIR/venv ..."
-    sudo -u "$REAL_USER" "$PROJECT_DIR/venv/bin/pip" install "pyusb>=1.2.1" "pyserial>=3.5" \
-        || echo "Warning: could not install pyusb; continuing with udev setup."
+    echo "Ensuring printer packages are installed in $PROJECT_DIR/venv ..."
+    sudo -u "$REAL_USER" "$PROJECT_DIR/venv/bin/pip" install \
+        "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" \
+        || echo "Warning: could not install printer packages; continuing with udev setup."
 else
     echo "No project venv found; skipping Python package install."
 fi

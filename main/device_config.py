@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "printer_address": "",
     "printer_backend": "",
     "printer_devfile": "",
+    "printer_baudrate": "",
 }
 
 CONFIG_FILENAME = "device_config.json"

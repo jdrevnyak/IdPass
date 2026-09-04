@@ -127,14 +127,14 @@ def _test_serial(r):
         import serial.tools.list_ports
     except ImportError:
         r.write("SKIP: pyserial not installed.")
-        return False
+        return {"ok": False}
 
     ports = list(serial.tools.list_ports.comports())
     if not ports:
         r.write("SKIP: no serial ports at all.")
         r.write("      Portable battery printers usually appear as /dev/ttyUSB0 (CH340).")
         r.write("      Power the printer ON, use a data Mini-USB cable, then re-run.")
-        return False
+        return {"ok": False}
 
     r.write("Serial ports found:")
     for p in ports:
@@ -164,10 +164,10 @@ def _test_serial(r):
                     s.write(TEST_BYTES)
                     s.flush()
                 r.write(f"SUCCESS: wrote to {p.device} @ {baud}")
-                return True
+                return {"ok": True, "devfile": p.device, "baud": baud}
             except Exception as e:
                 r.write(f"FAILED {p.device}@{baud}: {type(e).__name__}: {e}")
-    return False
+    return {"ok": False}
 
 
 def _test_pyusb(r):
@@ -256,17 +256,24 @@ def run_diagnostics():
         pass
 
     _system_info(r)
+    serial_info = _test_serial(r)
     results = {
         "/dev/usb/lp*": _test_lp_node(r),
-        "serial": _test_serial(r),
+        "serial": bool(serial_info.get("ok")),
         "pyusb bulk": _test_pyusb(r),
     }
+    if serial_info.get("ok"):
+        results["serial_devfile"] = serial_info.get("devfile")
+        results["serial_baud"] = serial_info.get("baud")
 
     r.section("SUMMARY")
     for name, ok in results.items():
+        if name.startswith("serial_"):
+            r.write(f"  {name:15s} {ok}")
+            continue
         r.write(f"  {name:15s} {'WORKS' if ok else 'failed/skipped'}")
 
-    if not any(results.values()):
+    if not any(v for k, v in results.items() if k in ("/dev/usb/lp*", "serial", "pyusb bulk") and v):
         r.write()
         r.write("Nothing could write to the printer. Check in this order:")
         r.write("  1. Printer power switch ON and power adapter connected")
@@ -277,6 +284,11 @@ def run_diagnostics():
     else:
         r.write()
         r.write("Use the method marked WORKS as the printer backend.")
+        if results.get("serial_devfile"):
+            r.write(
+                f"App will use serial {results['serial_devfile']} "
+                f"@ {results.get('serial_baud', 9600)}."
+            )
 
     return r.text(), results
 

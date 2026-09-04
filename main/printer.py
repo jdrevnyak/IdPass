@@ -4,23 +4,45 @@ from datetime import datetime
 import io
 import time
 import threading
-
-try:
-    from escpos.printer import Usb, Serial as EscposSerial, File as EscposFile
-    from escpos.exceptions import USBNotFoundError
-    import usb.core
-    import usb.util
-    import serial.tools.list_ports as serial_ports
-    PRINTER_LIB_AVAILABLE = True
-except ImportError:
-    PRINTER_LIB_AVAILABLE = False
-    print("[WARNING] python-escpos or pyusb not installed. Printing disabled.")
-
 import glob
 import os
 
+EscposUsb = None
+EscposSerial = None
+EscposFile = None
+USBNotFoundError = Exception
+usb = None
+UsbNoReset = None
+
+try:
+    from escpos.printer import Serial as EscposSerial, File as EscposFile
+    ESCPOS_AVAILABLE = True
+except ImportError:
+    ESCPOS_AVAILABLE = False
+    print("[WARNING] python-escpos not installed. Printing disabled.")
+
+try:
+    from escpos.printer import Usb as EscposUsb
+    from escpos.exceptions import USBNotFoundError
+    import usb.core as usb_core
+    import usb.util as usb_util
+
+    # Keep attribute-style access used elsewhere: usb.core / usb.util
+    class _UsbNS:
+        core = usb_core
+        util = usb_util
+
+    usb = _UsbNS
+    USB_AVAILABLE = True
+except ImportError:
+    USB_AVAILABLE = False
+    print("[WARNING] pyusb not installed. USB printer backend disabled (serial still OK).")
+
+PRINTER_LIB_AVAILABLE = ESCPOS_AVAILABLE
+
 DEFAULT_VENDOR_ID = 0x0416
 DEFAULT_PRODUCT_ID = 0x5011
+DEFAULT_SERIAL_BAUDRATES = (9600, 115200, 19200, 38400)
 
 # Portable 58mm BT/USB minis almost always use a USB-serial bridge, not USB printer class.
 _LIKELY_SERIAL_CHIPS = {
@@ -156,7 +178,7 @@ def list_usb_devices():
 
 
 def _list_raw_usb_devices():
-    if not PRINTER_LIB_AVAILABLE:
+    if not USB_AVAILABLE:
         return []
     devices = []
     try:
@@ -215,8 +237,8 @@ def _discover_bulk_endpoints(dev):
     return in_ep, out_ep
 
 
-if PRINTER_LIB_AVAILABLE:
-    class UsbNoReset(Usb):
+if USB_AVAILABLE and EscposUsb is not None:
+    class UsbNoReset(EscposUsb):
         """python-escpos 3.0a9 calls device.reset() in open(), which invalidates
         the handle so the next write times out (Errno 110). Skip the reset."""
 
@@ -247,6 +269,7 @@ class ThermalPrinter:
         address=None,
         backend_kind="auto",
         devfile=None,
+        baudrate=None,
     ):
         self.vendor_id = vendor_id
         self.product_id = product_id
@@ -256,6 +279,7 @@ class ThermalPrinter:
         self.printer = None
         self.backend_kind = backend_kind or "auto"
         self.devfile = devfile or None
+        self.baudrate = int(baudrate) if baudrate else None
         self.last_pass_params = None
         self.last_error = ""
         self.usb_timeout_ms = 8000
@@ -375,18 +399,23 @@ class ThermalPrinter:
         return self._candidate_serial_ports()
 
     def _connect(self):
-        if not PRINTER_LIB_AVAILABLE:
-            self.last_error = "python-escpos / pyusb is not installed"
+        if not ESCPOS_AVAILABLE:
+            self.last_error = "python-escpos is not installed"
             return
 
         self._disconnect()
         self.last_error = ""
         errors = []
+        bauds = DEFAULT_SERIAL_BAUDRATES
+        preferred_baud = getattr(self, "baudrate", None)
+        if preferred_baud:
+            bauds = (int(preferred_baud),) + tuple(b for b in bauds if int(b) != int(preferred_baud))
 
         if self.backend_kind == "serial" and self.devfile:
-            for baud in (9600, 115200, 19200, 38400):
+            for baud in bauds:
                 try:
                     self.printer = self._try_serial(self.devfile, baud)
+                    self.baudrate = baud
                     print(f"[PRINTER] Connected via serial {self.devfile} @ {baud}")
                     return
                 except Exception as e:
@@ -403,11 +432,12 @@ class ThermalPrinter:
         for port in self._candidate_serial_ports():
             if self.backend_kind == "serial" and self.devfile and port == self.devfile:
                 continue  # already tried above
-            for baud in (9600, 115200, 19200, 38400):
+            for baud in bauds:
                 try:
                     self.printer = self._try_serial(port, baud)
                     self.backend_kind = "serial"
                     self.devfile = port
+                    self.baudrate = baud
                     print(f"[PRINTER] Connected via serial {port} @ {baud}")
                     return
                 except Exception as e:
@@ -422,6 +452,11 @@ class ThermalPrinter:
                 return
             except Exception as e:
                 errors.append(f"{lp}: {e}")
+
+        if not USB_AVAILABLE or UsbNoReset is None:
+            errors.append("pyusb not installed (USB backend unavailable; use serial/ttyACM)")
+            self.last_error = " | ".join(errors) if errors else "Could not open the printer"
+            return
 
         for attempt in range(2):
             try:
@@ -460,15 +495,9 @@ class ThermalPrinter:
                 )
                 self.last_error = ""
                 return
-            except usb.core.USBError as e:
-                msg = f"USB error: {e}"
-                print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
-                errors.append(msg)
-                self.printer = None
-                if attempt == 0:
-                    time.sleep(1)
             except Exception as e:
-                msg = f"Connection failed: {e}"
+                # USBError is a subclass when pyusb is present
+                msg = f"USB/connection error: {e}"
                 print(f"[PRINTER] {msg} (attempt {attempt + 1}/2)")
                 errors.append(msg)
                 self.printer = None
@@ -579,14 +608,14 @@ class ThermalPrinter:
 
     def test_print(self):
         """Reconnect (handles unplug/replug) and print a short test page."""
-        if not PRINTER_LIB_AVAILABLE:
-            self.last_error = "python-escpos / pyusb is not installed"
+        if not ESCPOS_AVAILABLE:
+            self.last_error = "python-escpos is not installed"
             print("[PRINTER] Test skipped: python-escpos not installed.")
             return False
 
         if not self.reconnect():
             if not self.last_error:
-                self.last_error = "Could not open the USB printer"
+                self.last_error = "Could not open the printer"
             return False
 
         ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
