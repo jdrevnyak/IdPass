@@ -204,11 +204,63 @@ def _test_serial(r):
                 with serial.Serial(p.device, baud, timeout=2, write_timeout=5) as s:
                     s.write(TEST_BYTES)
                     s.flush()
-                r.write(f"SUCCESS: wrote to {p.device} @ {baud}")
+                r.write(
+                    f"WRITE ACCEPTED: {p.device} @ {baud}. "
+                    "This confirms the UART opened, not that the printer received data."
+                )
                 return {"ok": True, "devfile": p.device, "baud": baud}
             except Exception as e:
                 r.write(f"FAILED {p.device}@{baud}: {type(e).__name__}: {e}")
     return {"ok": False}
+
+
+def run_uart2_loopback():
+    """Verify Pi 5 UART2 TX/RX electrically with physical pins 7 and 29 jumpered."""
+    r = _Report()
+    r.write("Raspberry Pi 5 UART2 electrical loopback")
+    r.write("Required wiring: physical pin 7 (TXD2) directly to physical pin 29 (RXD2).")
+    r.write("Disconnect the printer RX wire while running this test.")
+    path = "/dev/ttyAMA2"
+    marker = b"IDPASS_UART2_LOOPBACK_7_TO_29"
+
+    if not os.path.exists(path):
+        r.write("FAILED: /dev/ttyAMA2 does not exist.")
+        return r.text(), {"uart2 loopback": False}
+
+    try:
+        import serial
+    except ImportError:
+        r.write("FAILED: pyserial is not installed.")
+        return r.text(), {"uart2 loopback": False}
+
+    try:
+        with serial.Serial(
+            path,
+            19200,
+            bytesize=8,
+            parity="N",
+            stopbits=1,
+            timeout=1,
+            write_timeout=2,
+            dsrdtr=False,
+            rtscts=False,
+        ) as port:
+            port.reset_input_buffer()
+            port.write(marker)
+            port.flush()
+            received = port.read(len(marker))
+    except Exception as e:
+        r.write(f"FAILED: {type(e).__name__}: {e}")
+        return r.text(), {"uart2 loopback": False}
+
+    if received == marker:
+        r.write("PASS: UART2 transmitted and received the complete test message.")
+        r.write("GPIO4/TXD2, GPIO5/RXD2, and /dev/ttyAMA2 are working.")
+        return r.text(), {"uart2 loopback": True}
+
+    r.write(f"FAILED: received {len(received)} of {len(marker)} expected bytes.")
+    r.write("Check that pin 7 is jumpered to pin 29, then run the test again.")
+    return r.text(), {"uart2 loopback": False}
 
 
 def _test_pyusb(r):

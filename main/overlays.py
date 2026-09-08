@@ -870,6 +870,16 @@ class SettingsOverlay(QWidget):
         )
         diagnose_printer_btn.clicked.connect(self.run_printer_diagnostics)
         printer_layout.addWidget(diagnose_printer_btn)
+        uart_loopback_btn = QPushButton("Test UART2 wiring")
+        self.uart_loopback_btn = uart_loopback_btn
+        uart_loopback_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        uart_loopback_btn.setMinimumHeight(48)
+        uart_loopback_btn.setStyleSheet(
+            "QPushButton { background: #8e44ad; color: white; border-radius: 6px; padding: 8px 4px; } "
+            "QPushButton:hover { background: #7d3c98; } QPushButton:pressed { background: #6c3483; }"
+        )
+        uart_loopback_btn.clicked.connect(self.run_uart2_loopback_test)
+        printer_layout.addWidget(uart_loopback_btn)
         vbox.addWidget(printer_group)
 
         app_control_group = QGroupBox("App")
@@ -1533,6 +1543,40 @@ class SettingsOverlay(QWidget):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def run_uart2_loopback_test(self):
+        """Verify UART2 after the user installs a physical TX-to-RX jumper."""
+        if getattr(self, "_printer_diag_busy", False):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "UART2 Wiring Test",
+            "Disconnect the printer RX wire.\n\n"
+            "Connect a jumper directly between:\n"
+            "• Pi physical pin 7 (GPIO4 / TXD2)\n"
+            "• Pi physical pin 29 (GPIO5 / RXD2)\n\n"
+            "Run the electrical loopback test now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._printer_diag_busy = True
+        self.uart_loopback_btn.setEnabled(False)
+        self.uart_loopback_btn.setText("Testing UART2…")
+        self.printer_status_label.setText("Running UART2 electrical loopback…")
+
+        def work():
+            try:
+                from diagnose_printer import run_uart2_loopback
+                report, results = run_uart2_loopback()
+                self.printer_diag_finished.emit(report, results)
+            except Exception as e:
+                self.printer_diag_finished.emit(None, e)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _printer_diag_finished(self, report, extra):
         # Reused as a general UI-thread callback for printer background work
         if report == "__install__":
@@ -1543,6 +1587,9 @@ class SettingsOverlay(QWidget):
         if hasattr(self, "diagnose_printer_btn"):
             self.diagnose_printer_btn.setEnabled(True)
             self.diagnose_printer_btn.setText("Diagnose printer")
+        if hasattr(self, "uart_loopback_btn"):
+            self.uart_loopback_btn.setEnabled(True)
+            self.uart_loopback_btn.setText("Test UART2 wiring")
 
         if report is None:
             if hasattr(self, "printer_status_label"):
@@ -1556,7 +1603,15 @@ class SettingsOverlay(QWidget):
             if ok and name in ("/dev/usb/lp*", "serial", "pyusb bulk")
         ]
         if hasattr(self, "printer_status_label"):
-            if works:
+            if results.get("uart2 loopback"):
+                self.printer_status_label.setText(
+                    "UART2 loopback PASSED. Remove the jumper and reconnect printer RX to pin 7."
+                )
+            elif "uart2 loopback" in results:
+                self.printer_status_label.setText(
+                    "UART2 loopback FAILED. Check the pin 7-to-pin 29 jumper."
+                )
+            elif works:
                 self.printer_status_label.setText("Diagnostics: " + ", ".join(works) + " WORKS.")
             else:
                 self.printer_status_label.setText("Diagnostics: no write path succeeded. See the report.")
