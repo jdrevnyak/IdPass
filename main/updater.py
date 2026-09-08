@@ -395,13 +395,39 @@ class UpdateManager:
         self.progress_dialog.close()
         
         if success:
+            release_version = ""
+            if self.update_downloader:
+                release_version = str(
+                    self.update_downloader.update_info.get("version", "")
+                ).lstrip("v").strip()
+
+            if release_version:
+                # Bootstrap fix for devices still running the old root OTA
+                # manager, which incorrectly preserves version.txt. Write the
+                # downloaded release marker directly; pending files are already
+                # staged and will be applied when the app restarts.
+                version_file = Path(__file__).parent / "version.txt"
+                temp_file = version_file.with_suffix(".txt.tmp")
+                try:
+                    temp_file.write_text(release_version + "\n", encoding="utf-8")
+                    temp_file.replace(version_file)
+                    self.current_version = release_version
+                    print(f"[UPDATE] Local version marker updated to {release_version}")
+
+                    settings = getattr(self.parent_window, "settings_overlay", None)
+                    if settings is not None:
+                        settings.update_version_display()
+                except Exception as exc:
+                    print(f"[UPDATE] Could not update local version marker: {exc}")
+
             msg = QMessageBox(self.parent_window)
             msg.setWindowTitle("Update Ready")
             msg.setText("The update has been downloaded successfully!")
             msg.setInformativeText(
                 "Files have been placed in the deposit folder.\n\n"
                 "The OTA update system will automatically apply them when you restart the application.\n\n"
-                "Restart now or wait until a convenient time."
+                f"Downloaded version: {release_version or 'unknown'}\n\n"
+                "Restart the application to finish applying it."
             )
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec_()
