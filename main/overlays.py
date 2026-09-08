@@ -1740,20 +1740,13 @@ class SettingsOverlay(QWidget):
         
         if reply == QMessageBox.Yes:
             print("[INFO] Restarting application...")
-            
-            # Clean up GPIO before restart
             self.parent.cleanup_gpio()
-            
-            # Simple approach: just exit and let systemd restart
-            from PyQt5.QtWidgets import QApplication
+
+            # Exit code 75 tells ota-update.py this was an intentional restart.
             app = QApplication.instance()
             if app:
                 app.closeAllWindows()
-                app.quit()
-            
-            # Force exit
-            import sys
-            sys.exit(0)
+                app.exit(75)
     
     def quit_application(self):
         """Quit the application"""
@@ -1764,9 +1757,15 @@ class SettingsOverlay(QWidget):
         
         if reply == QMessageBox.Yes:
             print("[INFO] Quitting application...")
-            # Clean up GPIO before quitting
             self.parent.cleanup_gpio()
-            QApplication.quit()
+
+            # A clean exit (0) tells ota-update.py to leave the GUI stopped.
+            # The OTA monitor remains alive so systemd Restart=always does not
+            # immediately launch the app again. A reboot starts it normally.
+            app = QApplication.instance()
+            if app:
+                app.closeAllWindows()
+                app.exit(0)
 
     def show_overlay(self):
         self.setGeometry(self.parent.rect())

@@ -505,7 +505,27 @@ class OTAUpdateManager:
             try:
                 # Check if main process is still running
                 if main_process.poll() is not None:
-                    self.logger(f"Main application exited with code: {main_process.returncode}")
+                    exit_code = main_process.returncode
+                    self.logger(f"Main application exited with code: {exit_code}")
+
+                    if exit_code == 0:
+                        # Quit was selected in the GUI. Keep this monitor alive
+                        # without a child process so systemd Restart=always does
+                        # not interpret the monitor's exit as a reason to reopen
+                        # the application. Rebooting starts everything normally.
+                        self.logger(
+                            "Clean application exit requested; leaving GUI stopped until reboot/service restart."
+                        )
+                        main_process = None
+                        while True:
+                            time.sleep(60)
+
+                    if exit_code == 75:
+                        # Explicit Restart button. Do not run a GitHub check here;
+                        # simply start the application again immediately.
+                        self.logger("Intentional application restart requested.")
+                        main_process = self._start_main_application()
+                        continue
 
                     # If there are updates pending, apply them and restart
                     if self.check_for_updates():
