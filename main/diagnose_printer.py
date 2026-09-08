@@ -71,7 +71,31 @@ def _system_info(r):
 
     r.write()
     r.write("-- serial ports --")
-    r.write(sh("ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null") or "(none)")
+    r.write(
+        sh("ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyAMA2 2>/dev/null")
+        or "(none)"
+    )
+
+    r.write()
+    r.write("-- Raspberry Pi 5 UART2 TTL printer --")
+    r.write("Boot configuration:")
+    r.write(
+        sh(
+            "grep -n 'uart2-pi5' /boot/firmware/config.txt "
+            "/boot/config.txt 2>/dev/null"
+        )
+        or "uart2-pi5 NOT configured"
+    )
+    r.write("Device:")
+    r.write(sh("ls -l /dev/ttyAMA2 2>/dev/null") or "/dev/ttyAMA2 NOT present")
+    r.write("GPIO4 (physical pin 7, expected TXD2):")
+    r.write(sh("pinctrl get 4 2>/dev/null") or "(pinctrl unavailable)")
+    r.write("GPIO5 (physical pin 29, expected RXD2):")
+    r.write(sh("pinctrl get 5 2>/dev/null") or "(pinctrl unavailable)")
+    r.write(
+        "Note: TTL has no plug detection. These checks confirm the Pi UART, "
+        "not that the printer received data."
+    )
 
     r.write()
     r.write("-- printer in lsusb --")
