@@ -144,7 +144,8 @@ def _test_serial(r):
 
     ranked = []
     for p in ports:
-        if p.device.startswith("/dev/ttyAMA") or os.path.basename(p.device).startswith("ttyS"):
+        name = os.path.basename(p.device)
+        if name in ("ttyAMA0", "ttyAMA10", "serial0") or name.startswith("ttyS"):
             r.write(f"  {p.device}  (Pi board UART — skipped, not the printer)")
             continue
         score = 2
@@ -154,12 +155,12 @@ def _test_serial(r):
             (0x067B, 0x2303), (0x0483, 0x5740),
         }:
             score = 0
-        elif p.device.startswith(("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")):
+        elif p.device.startswith(("/dev/ttyUSB", "/dev/ttyACM", "/dev/rfcomm")) or name == "ttyAMA2":
             score = 1
         ranked.append((score, p))
     # Also include nodes that exist on disk but pyserial missed
     seen = {p.device for _, p in ranked}
-    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*", "/dev/ttyAMA2"):
         for path in sorted(glob.glob(pattern)):
             if path in seen:
                 continue
@@ -169,12 +170,12 @@ def _test_serial(r):
     ranked.sort(key=lambda x: (x[0], x[1].device))
 
     if not ranked:
-        r.write("SKIP: only board UART ports found (e.g. ttyAMA0).")
-        r.write("      Power ON the mini printer, then unplug/replug USB.")
+        r.write("SKIP: no printer serial port found.")
+        r.write("      For Pi 5 TTL, enable uart2-pi5 and use /dev/ttyAMA2.")
         return {"ok": False}
 
     for _score, p in ranked:
-        for baud in (9600, 115200, 19200, 38400):
+        for baud in (9600, 19200, 38400, 57600, 115200):
             try:
                 with serial.Serial(p.device, baud, timeout=2, write_timeout=5) as s:
                     s.write(TEST_BYTES)

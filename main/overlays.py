@@ -820,7 +820,7 @@ class SettingsOverlay(QWidget):
         printer_layout = QVBoxLayout(printer_group)
         printer_layout.setSpacing(6)
         usb_row = QHBoxLayout()
-        usb_lbl = QLabel("USB:")
+        usb_lbl = QLabel("Port:")
         usb_lbl.setFont(QFont("Arial", 14))
         usb_row.addWidget(usb_lbl)
         self.printer_combo = QComboBox()
@@ -833,7 +833,30 @@ class SettingsOverlay(QWidget):
         refresh_printer_btn.clicked.connect(self.refresh_printer_devices)
         usb_row.addWidget(refresh_printer_btn)
         printer_layout.addLayout(usb_row)
-        self.printer_status_label = QLabel("Select the printer USB device, then Test printer.")
+
+        baud_row = QHBoxLayout()
+        baud_lbl = QLabel("Baud:")
+        baud_lbl.setFont(QFont("Arial", 14))
+        baud_row.addWidget(baud_lbl)
+        self.printer_baud_combo = QComboBox()
+        self.printer_baud_combo.setMinimumHeight(48)
+        self.printer_baud_combo.setFont(QFont("Arial", 13))
+        self.printer_baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
+        current_baud = getattr(getattr(self.parent, "printer", None), "baudrate", None)
+        if not current_baud:
+            current_baud = (getattr(self.parent, "device_config", {}) or {}).get(
+                "printer_baudrate"
+            )
+        if current_baud:
+            idx = self.printer_baud_combo.findText(str(current_baud))
+            if idx >= 0:
+                self.printer_baud_combo.setCurrentIndex(idx)
+        baud_row.addWidget(self.printer_baud_combo, 1)
+        printer_layout.addLayout(baud_row)
+
+        self.printer_status_label = QLabel(
+            "Select USB, serial, or Pi 5 UART2 (/dev/ttyAMA2), then Test printer."
+        )
         self.printer_status_label.setWordWrap(True)
         self.printer_status_label.setStyleSheet("color: #666; font-size: 14px;")
         printer_layout.addWidget(self.printer_status_label)
@@ -956,8 +979,9 @@ class SettingsOverlay(QWidget):
         if not devices:
             self.printer_combo.addItem("No USB/serial devices found — tap Refresh", None)
             self.printer_status_label.setText(
-                "No ttyACM/ttyUSB printer found. Power the mini printer ON, wait for its LED, "
-                "unplug/replug USB, then Refresh. ttyAMA0 is the Pi itself — ignore it."
+                "No printer port found. USB printers use ttyACM/ttyUSB. For a Pi 5 TTL "
+                "printer, tap Install printer and reboot to enable ttyAMA2. ttyAMA0 is "
+                "reserved for the ESP32."
             )
             return
 
@@ -985,7 +1009,7 @@ class SettingsOverlay(QWidget):
         current = self.printer_combo.currentData() or {}
         self.printer_status_label.setText(
             f"{len(devices)} device(s). Selected: {current.get('label', 'none')}. "
-            "Portable minis usually appear as ttyACM0 / ttyUSB0 — pick that, then Test."
+            "Portable USB minis use ttyACM/ttyUSB; Pi 5 TTL uses ttyAMA2."
         )
 
     def _apply_selected_printer(self, connect=False):
@@ -1002,12 +1026,20 @@ class SettingsOverlay(QWidget):
         addr = data.get("address")
         kind = data.get("kind") or "auto"
         devfile = data.get("devfile") or ""
+        baud = 9600
+        if hasattr(self, "printer_baud_combo"):
+            try:
+                baud = int(self.printer_baud_combo.currentText())
+            except (TypeError, ValueError):
+                pass
         printer.vendor_id = vid
         printer.product_id = pid
         printer.bus = bus
         printer.address = addr
         printer.backend_kind = kind
         printer.devfile = devfile or None
+        if kind == "serial":
+            printer.baudrate = baud
         update_device_config(
             printer_vendor_id=f"0x{int(vid):04x}",
             printer_product_id=f"0x{int(pid):04x}",
@@ -1015,7 +1047,7 @@ class SettingsOverlay(QWidget):
             printer_address="" if addr is None else str(addr),
             printer_backend=kind,
             printer_devfile=devfile,
-            printer_baudrate=str(getattr(printer, "baudrate", "") or ""),
+            printer_baudrate=str(baud if kind == "serial" else ""),
         )
         if connect:
             printer.reconnect()
@@ -1531,6 +1563,10 @@ class SettingsOverlay(QWidget):
         printer.backend_kind = "serial"
         printer.devfile = devfile
         printer.baudrate = int(baud) if baud else 9600
+        if hasattr(self, "printer_baud_combo"):
+            idx = self.printer_baud_combo.findText(str(printer.baudrate))
+            if idx >= 0:
+                self.printer_baud_combo.setCurrentIndex(idx)
         printer.bus = None
         printer.address = None
         update_device_config(
@@ -1670,11 +1706,11 @@ class SettingsOverlay(QWidget):
             QMessageBox.information(
                 self,
                 "Install Printer",
-                "Printer packages installed.\n\n"
-                "1. Power the mini printer ON\n"
-                "2. Unplug and re-plug the USB cable\n"
-                "3. Tap Refresh — look for ttyACM0 or ttyUSB0 (not ttyAMA0)\n"
-                "4. Tap Test printer\n\n"
+                "Printer support installed.\n\n"
+                "USB printer: power it on, reconnect USB, then Refresh.\n\n"
+                "Pi 5 TTL printer: UART2 is configured on GPIO4 TX (physical pin 7). "
+                "Reboot, then Refresh and select /dev/ttyAMA2.\n\n"
+                "Select the printer baud rate, then tap Test printer.\n\n"
                 f"{text}",
             )
             self.refresh_printer_devices()

@@ -42,7 +42,7 @@ PRINTER_LIB_AVAILABLE = ESCPOS_AVAILABLE
 
 DEFAULT_VENDOR_ID = 0x0416
 DEFAULT_PRODUCT_ID = 0x5011
-DEFAULT_SERIAL_BAUDRATES = (9600, 115200, 19200, 38400)
+DEFAULT_SERIAL_BAUDRATES = (9600, 19200, 38400, 57600, 115200)
 
 # Portable 58mm BT/USB minis almost always use a USB-serial bridge, not USB printer class.
 _LIKELY_SERIAL_CHIPS = {
@@ -80,14 +80,14 @@ def _is_likely_printer_ids(vid, pid):
 
 
 def _is_board_uart(path):
-    """Raspberry Pi onboard UART — never the USB receipt printer."""
+    """UARTs reserved for the ESP32/console, not the receipt printer."""
     name = os.path.basename(path or "")
-    return name.startswith(("ttyAMA", "ttyS", "serial"))
+    return name in ("ttyAMA0", "ttyAMA10", "serial0") or name.startswith("ttyS")
 
 
-def _is_usb_serial_path(path):
+def _is_printer_serial_path(path):
     name = os.path.basename(path or "")
-    return name.startswith(("ttyUSB", "ttyACM", "rfcomm"))
+    return name.startswith(("ttyUSB", "ttyACM", "rfcomm")) or name == "ttyAMA2"
 
 
 def reload_printer_backends():
@@ -433,7 +433,9 @@ def _serial_port_label(port):
     tag = ""
     if _is_board_uart(getattr(port, "device", "") or ""):
         name = "Pi board UART (not printer)"
-    elif _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(getattr(port, "device", "") or ""):
+    elif _is_likely_printer_ids(vid, pid) or _is_printer_serial_path(getattr(port, "device", "") or ""):
+        if os.path.basename(getattr(port, "device", "") or "") == "ttyAMA2":
+            name = "Pi 5 UART2 printer"
         tag = "  ← try this"
     return f"{port.device}  {name}  {ids}{tag}"
 
@@ -464,13 +466,13 @@ def list_usb_devices():
                 "bus": None,
                 "address": None,
                 "label": _serial_port_label(p),
-                "likely_printer": _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(path),
+                "likely_printer": _is_likely_printer_ids(vid, pid) or _is_printer_serial_path(path),
             })
     except Exception as e:
         print(f"[PRINTER] Serial scan failed: {e}")
 
     # pyserial sometimes misses nodes that exist on disk — pick them up directly
-    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*", "/dev/ttyAMA2"):
         for path in sorted(glob.glob(pattern)):
             if path in seen_serial:
                 continue
@@ -482,7 +484,11 @@ def list_usb_devices():
                 "product_id": 0,
                 "bus": None,
                 "address": None,
-                "label": f"{path}  USB serial  ← try this",
+                "label": (
+                    f"{path}  Pi 5 UART2 printer  ← try this"
+                    if os.path.basename(path) == "ttyAMA2"
+                    else f"{path}  USB serial  ← try this"
+                ),
                 "likely_printer": True,
             })
 
@@ -726,11 +732,11 @@ class ThermalPrinter:
                     if int(vid) == int(self.vendor_id) and int(pid) == int(self.product_id):
                         ports.append(path)
                         continue
-                if _is_likely_printer_ids(vid, pid) or _is_usb_serial_path(path):
+                if _is_likely_printer_ids(vid, pid) or _is_printer_serial_path(path):
                     ports.append(path)
         except Exception as e:
             print(f"[PRINTER] Serial port scan: {e}")
-        for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*"):
+        for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/rfcomm*", "/dev/ttyAMA2"):
             for path in sorted(glob.glob(pattern)):
                 if path not in ports:
                     ports.append(path)

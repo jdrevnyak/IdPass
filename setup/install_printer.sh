@@ -84,9 +84,38 @@ else
     echo "No project directory found; skipping Python package install."
 fi
 
-# The app needs to read /dev/usb/lp0 (group lp) and raw USB (group plugdev)
+# The app needs lp/plugdev for USB and dialout for serial/TTL UARTs.
 if [ -n "$REAL_USER" ]; then
-    usermod -aG lp,plugdev "$REAL_USER" || true
+    usermod -aG lp,plugdev,dialout "$REAL_USER" || true
+fi
+
+# Raspberry Pi 5: enable the second UART for an embedded TTL printer.
+# UART2 uses GPIO4 TX (physical pin 7) and GPIO5 RX (physical pin 29),
+# appears as /dev/ttyAMA2, and does not conflict with the ESP32 on UART0.
+UART2_CHANGED=0
+PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+if [[ "$PI_MODEL" == *"Raspberry Pi 5"* ]]; then
+    BOOT_CONFIG=""
+    for candidate in /boot/firmware/config.txt /boot/config.txt; do
+        if [ -f "$candidate" ]; then
+            BOOT_CONFIG="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$BOOT_CONFIG" ]; then
+        if ! grep -Eq '^[[:space:]]*dtoverlay=uart2-pi5([,[:space:]]|$)' "$BOOT_CONFIG"; then
+            echo >> "$BOOT_CONFIG"
+            echo "# IdPass embedded TTL thermal printer" >> "$BOOT_CONFIG"
+            echo "dtoverlay=uart2-pi5" >> "$BOOT_CONFIG"
+            UART2_CHANGED=1
+            echo "Enabled Raspberry Pi 5 UART2 in $BOOT_CONFIG"
+        else
+            echo "Raspberry Pi 5 UART2 is already enabled."
+        fi
+    else
+        echo "Warning: Pi 5 detected but boot config was not found."
+    fi
 fi
 
 # Install libusb system library if missing
@@ -123,3 +152,8 @@ else
     echo "No /dev/usb/lp* device. Unplug and re-plug the printer, then re-run this."
 fi
 echo "Group changes require a reboot (or logout) to take effect."
+if [ "$UART2_CHANGED" -eq 1 ]; then
+    echo "REBOOT REQUIRED: UART2 will appear as /dev/ttyAMA2 after reboot."
+elif [[ "$PI_MODEL" == *"Raspberry Pi 5"* ]]; then
+    echo "Pi 5 TTL printer port: /dev/ttyAMA2 (GPIO4 TX, physical pin 7)."
+fi
