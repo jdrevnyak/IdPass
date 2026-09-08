@@ -41,7 +41,6 @@ class OTAUpdateManager:
             'student_attendance.db',
             'firebase-service-account.json',
             'main.py',  # Critical launcher file
-            'version.txt'  # Version tracking file
         ]
 
         # Create necessary directories
@@ -201,7 +200,7 @@ class OTAUpdateManager:
                             self.logger(f"Staged directory for main/: {item.name}")
                     except Exception as e:
                         self.logger(f"Error staging {item.name}: {e}", "ERROR")
-                
+
                 # 2. Copy root-level infrastructure files directly to project root
                 #    (files like ota-update.py, setup scripts, docs, etc.)
                 root_files_updated = 0
@@ -269,6 +268,15 @@ class OTAUpdateManager:
                         self.logger(f"Error copying {item.name}: {e}", "ERROR")
                 
                 self.logger(f"Staged {files_copied} files for main/")
+
+            # The release tag is the source of truth. Older versions preserved
+            # version.txt forever, causing every check to offer the same update.
+            release_version = release_data.get('tag_name', '').lstrip('v').strip()
+            if release_version:
+                (self.deposit_dir / "version.txt").write_text(
+                    release_version + "\n", encoding="utf-8"
+                )
+                self.logger(f"Staged version marker: {release_version}")
 
             # Clean up
             shutil.rmtree(temp_extract_dir)
@@ -448,6 +456,8 @@ class OTAUpdateManager:
         try:
             # Copy new files from deposit to main
             self._copy_tree_preserve(self.deposit_dir, self.main_dir)
+            self.current_version = self._get_current_version()
+            self.logger(f"Installed version is now: {self.current_version}")
 
             # Clear the deposit directory
             self._clear_deposit()

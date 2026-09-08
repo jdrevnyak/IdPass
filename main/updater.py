@@ -228,6 +228,16 @@ class UpdateDownloader(QThread):
                         print(f"[UPDATE] Copied directory: {item.name}")
                 except Exception as e:
                     print(f"[UPDATE] Warning: Could not copy {item.name}: {e}")
+
+            # Always stage the GitHub release tag as the installed version.
+            # This avoids repeatedly offering an update when a release archive
+            # contains a stale version.txt.
+            release_version = str(self.update_info.get("version", "")).lstrip("v").strip()
+            if release_version:
+                (self.deposit_dir / "version.txt").write_text(
+                    release_version + "\n", encoding="utf-8"
+                )
+                print(f"[UPDATE] Staged version marker: {release_version}")
             
             # Clean up temp directory
             shutil.rmtree(self.temp_dir)

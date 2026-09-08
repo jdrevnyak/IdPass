@@ -42,7 +42,6 @@ class OTAUpdateManager:
             'firebase-service-account.json',
             'requirements.txt',
             'main.py',  # Critical launcher file
-            'version.txt'  # Version tracking file
         ]
 
         # Create necessary directories
@@ -264,6 +263,15 @@ class OTAUpdateManager:
                 
                 self.logger(f"Staged {files_copied} files for main/")
 
+            # The release tag is authoritative, even if version.txt in the
+            # release archive was not bumped correctly.
+            release_version = release_data.get('tag_name', '').lstrip('v').strip()
+            if release_version:
+                (self.deposit_dir / "version.txt").write_text(
+                    release_version + "\n", encoding="utf-8"
+                )
+                self.logger(f"Staged version marker: {release_version}")
+
             # Clean up
             shutil.rmtree(temp_extract_dir)
             zip_path.unlink()
@@ -442,6 +450,8 @@ class OTAUpdateManager:
         try:
             # Copy new files from deposit to main
             self._copy_tree_preserve(self.deposit_dir, self.main_dir)
+            self.current_version = self._get_current_version()
+            self.logger(f"Installed version is now: {self.current_version}")
 
             # Clear the deposit directory
             self._clear_deposit()
