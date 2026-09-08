@@ -1007,6 +1007,19 @@ class SettingsOverlay(QWidget):
                 preferred_idx = i
         self.printer_combo.setCurrentIndex(preferred_idx)
         current = self.printer_combo.currentData() or {}
+        saved_baud = (getattr(self.parent, "device_config", {}) or {}).get(
+            "printer_baudrate"
+        )
+        if (
+            current.get("devfile") == "/dev/ttyAMA2"
+            and not str(saved_baud or "").strip()
+            and hasattr(self, "printer_baud_combo")
+        ):
+            # 19200 is the most common factory rate for embedded TTL
+            # ESC/POS mechanisms; the user can override it in Settings.
+            idx = self.printer_baud_combo.findText("19200")
+            if idx >= 0:
+                self.printer_baud_combo.setCurrentIndex(idx)
         self.printer_status_label.setText(
             f"{len(devices)} device(s). Selected: {current.get('label', 'none')}. "
             "Portable USB minis use ttyACM/ttyUSB; Pi 5 TTL uses ttyAMA2."
@@ -1469,10 +1482,24 @@ class SettingsOverlay(QWidget):
             QMessageBox.critical(self, "Printer Test", f"Error: {err}")
             return
         if ok:
+            printer = getattr(self.parent, "printer", None)
+            kind = getattr(printer, "backend_kind", "") if printer else ""
+            devfile = getattr(printer, "devfile", "") if printer else ""
+            baud = getattr(printer, "baudrate", "") if printer else ""
+            if kind == "serial":
+                detail = (
+                    f"Data was sent to {devfile or 'the serial port'}"
+                    f" at {baud or 'unknown'} baud.\n\n"
+                    "TTL is one-way, so the app cannot confirm that paper printed. "
+                    "If nothing printed, try 19200 first, then 9600. Also verify "
+                    "Pi GPIO4 TX (physical pin 7) goes to printer RX and the grounds are connected."
+                )
+            else:
+                detail = "Test data was sent. Check the printer for output."
             QMessageBox.information(
                 self,
                 "Printer Test",
-                "Test page was sent. Check the printer for output.",
+                detail,
             )
         else:
             detail = err or "Could not connect or print."

@@ -970,8 +970,19 @@ class ThermalPrinter:
 
         ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         try:
-            # Avoid printer.set() — some profiles choke on it. Send plain ESC/POS text.
+            # Wake and initialize embedded TTL mechanisms before printing.
+            # Avoid printer.set() — some generic profiles choke on it.
+            if self.backend_kind == "serial":
+                self.printer._raw(b"\xff")
+                time.sleep(0.05)
+            self.printer._raw(b"\x1b@")
             self.printer._raw(b"\nIdPass printer test\n")
+            if self.backend_kind == "serial":
+                self.printer._raw(
+                    f"Port: {self.devfile}\nBaud: {self.baudrate}\n".encode(
+                        "ascii", "replace"
+                    )
+                )
             self.printer._raw(ts.encode("ascii", "replace") + b"\n")
             self.printer._raw(b"--------------------------------\n\n\n\n")
             try:
