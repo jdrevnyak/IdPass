@@ -37,6 +37,8 @@ DESTINATION_STYLES = {
 
 # Shown on a tile whose visit type is currently active.
 _ACTIVE_GRADIENT = ("#64748b", "#475569")
+# Bathroom / Water when another student is already out.
+_DISABLED_GRADIENT = ("#94a3b8", "#7b8794")
 
 
 def _shift(hex_color, factor):
@@ -216,6 +218,11 @@ class DestinationTile(QAbstractButton):
     def is_active(self):
         return self._active
 
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        self.setCursor(Qt.PointingHandCursor if enabled else Qt.ForbiddenCursor)
+        self.update()
+
     def sizeHint(self):
         return QSize(166, 180)
 
@@ -227,8 +234,14 @@ class DestinationTile(QAbstractButton):
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
-        top, bottom = _ACTIVE_GRADIENT if self._active else self._gradient
-        if self.isDown():
+        disabled = not self.isEnabled()
+        if disabled:
+            top, bottom = _DISABLED_GRADIENT
+        elif self._active:
+            top, bottom = _ACTIVE_GRADIENT
+        else:
+            top, bottom = self._gradient
+        if self.isDown() and not disabled:
             top, bottom = _shift(top, 0.88).name(), _shift(bottom, 0.88).name()
 
         gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
@@ -238,11 +251,12 @@ class DestinationTile(QAbstractButton):
         painter.setBrush(QBrush(gradient))
         painter.drawRoundedRect(rect, self._RADIUS, self._RADIUS)
 
+        ink = "#e2e8f0" if disabled else "#ffffff"
         icon_size = min(54.0, max(24.0, min(rect.width(), rect.height()) * 0.26))
         painter.save()
         painter.translate(rect.center().x() - icon_size / 2,
                           rect.top() + rect.height() * 0.40 - icon_size / 2)
-        draw_glyph(painter, self._glyph, icon_size, "#ffffff", 2.2)
+        draw_glyph(painter, self._glyph, icon_size, ink, 2.2)
         painter.restore()
 
         label = self._label()
@@ -255,7 +269,7 @@ class DestinationTile(QAbstractButton):
             point_size -= 1
             font = QFont("Arial", point_size, QFont.Bold)
         painter.setFont(font)
-        painter.setPen(QPen(QColor("#ffffff")))
+        painter.setPen(QPen(QColor(ink)))
         painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, label)
 
 
@@ -393,7 +407,7 @@ class HomeScreen(QWidget):
 
         self.prompt = QLabel("Select your hall pass destination")
         self.prompt.setAlignment(Qt.AlignCenter)
-        self.prompt.setWordWrap(True)
+        self.prompt.setWordWrap(False)
         self.prompt.setFont(QFont("Arial", 13))
         self.prompt.setFixedHeight(self._STATUS_H)
         self.prompt.setCursor(Qt.PointingHandCursor)

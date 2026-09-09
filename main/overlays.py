@@ -2837,17 +2837,21 @@ class BreakTypePickerOverlay(QWidget):
             ("Guidance", "#a24df0", "#7b3fe4"),
         ]
         self._type_buttons = {}
+        self._type_styles = {}
         for label, bg, bg_pressed in btn_data:
             btn = QPushButton(label)
             btn.setFont(QFont("Arial", 20, QFont.Bold))
             btn.setMinimumHeight(64)
-            btn.setStyleSheet(
+            style = (
                 f"QPushButton {{ background: {bg}; color: white; border-radius: 16px; padding: 12px 0; }} "
                 f"QPushButton:hover {{ background: {bg_pressed}; }} "
-                f"QPushButton:pressed {{ background: {bg_pressed}; }}"
+                f"QPushButton:pressed {{ background: {bg_pressed}; }} "
+                f"QPushButton:disabled {{ background: #94a3b8; color: #e2e8f0; }}"
             )
+            btn.setStyleSheet(style)
             btn.clicked.connect(lambda _, t=label: self._on_selected(t))
             self._type_buttons[label] = btn
+            self._type_styles[label] = style
             vbox.addWidget(btn)
 
         cancel_btn = QPushButton("Cancel")
@@ -2895,14 +2899,24 @@ class BreakTypePickerOverlay(QWidget):
             for visit_type, btn in self._type_buttons.items():
                 if visit_type == active:
                     btn.setText(self._END_LABELS.get(visit_type, f"End {visit_type}"))
+                    btn.setEnabled(True)
                     btn.setVisible(True)
                 else:
                     btn.setVisible(False)
         else:
             self.subtitle.setText("Where are you going?")
+            someone_out = False
+            db = getattr(self.parent, "db", None)
+            if db:
+                try:
+                    someone_out = bool(db.get_active_outings())
+                except Exception:
+                    someone_out = False
             for visit_type, btn in self._type_buttons.items():
                 btn.setText(visit_type)
                 btn.setVisible(True)
+                locked = someone_out and visit_type in ("Bathroom", "Water")
+                btn.setEnabled(not locked)
         if self.parent:
             self.setGeometry(self.parent.rect())
         self.setVisible(True)

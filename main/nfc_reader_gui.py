@@ -1155,7 +1155,7 @@ class NFCReaderGUI(QMainWindow):
             seconds = int(elapsed.total_seconds() % 60)
             label = active.get('type', 'Out')
             student_name = active.get('student_name', 'Student')
-            self.prompt.setText(f"{label}: {student_name}\nElapsed: {minutes:02d}:{seconds:02d}")
+            self.prompt.setText(f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}")
         else:
             self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
         self._update_visit_button_labels(outings)
@@ -1164,8 +1164,13 @@ class NFCReaderGUI(QMainWindow):
         """Flip destination tiles to their 'End …' state while a visit is active."""
         outings = outings or []
         active_types = {o.get("type") for o in outings}
+        someone_out = bool(outings)
         for destination, tile in self.destination_tiles.items():
             tile.set_active(destination in active_types)
+            # Only one student may leave for bathroom/water. Keep the active
+            # tile enabled so that visit can still be ended.
+            if destination in ("Bathroom", "Water"):
+                tile.setEnabled((not someone_out) or destination in active_types)
 
         count = len(outings)
         if count:
