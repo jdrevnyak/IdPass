@@ -63,36 +63,49 @@ class _BackspaceButton(QPushButton):
         draw_glyph(painter, "backspace", size, "#ffffff", 1.8)
 
 
+def _keypad_card_size(host):
+    """Size the ID modal so CREATE PASS / Cancel stay on an 800x480 panel."""
+    avail_w = host.width() if host is not None else 800
+    avail_h = host.height() if host is not None else 480
+    width = min(320, max(260, avail_w - 16))
+    height = min(468, max(360, avail_h - 8))
+    return width, height
+
+
+def _size_id_keypad_card(card, host):
+    card.setFixedSize(*_keypad_card_size(host))
+
+
 def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
                           on_submit=None, on_cancel=None):
     """Build the white modal card. Returns (card, widgets_dict)."""
     card = QWidget(parent)
-    card.setStyleSheet("background: #ffffff; border-radius: 24px;")
-    card.setFixedSize(360, 560)
+    card.setStyleSheet("background: #ffffff; border-radius: 18px;")
+    _size_id_keypad_card(card, parent)
     vbox = QVBoxLayout(card)
-    vbox.setContentsMargins(24, 22, 24, 16)
-    vbox.setSpacing(10)
+    vbox.setContentsMargins(12, 8, 12, 6)
+    vbox.setSpacing(5)
 
     title = QLabel("Enter Student ID #")
     title.setAlignment(Qt.AlignCenter)
-    title.setFont(QFont("Arial", 20, QFont.Bold))
+    title.setFont(QFont("Arial", 16, QFont.Bold))
     title.setStyleSheet("color: #1e293b;")
     vbox.addWidget(title)
 
     destination_label = QLabel(f"Destination: {destination}" if destination else "")
     destination_label.setAlignment(Qt.AlignCenter)
-    destination_label.setFont(QFont("Arial", 13))
+    destination_label.setFont(QFont("Arial", 11))
     destination_label.setStyleSheet("color: #64748b;")
     destination_label.setVisible(bool(destination))
     vbox.addWidget(destination_label)
 
     display = QLabel(_id_display_text(""))
     display.setAlignment(Qt.AlignCenter)
-    display.setFont(QFont("Arial", 26, QFont.Bold))
-    display.setMinimumHeight(52)
+    display.setFont(QFont("Arial", 20, QFont.Bold))
+    display.setFixedHeight(36)
     display.setStyleSheet(
         "background: #f1f5f9; color: #1e293b; border: 1px solid #cbd5e1; "
-        "border-radius: 12px; letter-spacing: 4px;"
+        "border-radius: 10px; letter-spacing: 3px;"
     )
     vbox.addWidget(display)
 
@@ -116,50 +129,51 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
         _refresh()
 
     grid = QGridLayout()
-    grid.setSpacing(10)
+    grid.setSpacing(6)
     for i, digit in enumerate("123456789"):
         btn = QPushButton(digit)
-        btn.setMinimumSize(90, 56)
+        btn.setMinimumSize(72, 36)
         btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        btn.setFont(QFont("Arial", 20, QFont.Bold))
+        btn.setFont(QFont("Arial", 16, QFont.Bold))
         btn.setStyleSheet(_DIGIT_STYLE)
         btn.clicked.connect(lambda _, d=digit: _append(d))
         grid.addWidget(btn, i // 3, i % 3)
 
     clear_btn = QPushButton("CLEAR")
-    clear_btn.setMinimumSize(90, 56)
+    clear_btn.setMinimumSize(72, 36)
     clear_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    clear_btn.setFont(QFont("Arial", 12, QFont.Bold))
+    clear_btn.setFont(QFont("Arial", 11, QFont.Bold))
     clear_btn.setStyleSheet(_RED_STYLE)
     clear_btn.clicked.connect(_clear)
     grid.addWidget(clear_btn, 3, 0)
 
     zero_btn = QPushButton("0")
-    zero_btn.setMinimumSize(90, 56)
+    zero_btn.setMinimumSize(72, 36)
     zero_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    zero_btn.setFont(QFont("Arial", 20, QFont.Bold))
+    zero_btn.setFont(QFont("Arial", 16, QFont.Bold))
     zero_btn.setStyleSheet(_DIGIT_STYLE)
     zero_btn.clicked.connect(lambda: _append("0"))
     grid.addWidget(zero_btn, 3, 1)
 
     back_btn = _BackspaceButton("")
-    back_btn.setMinimumSize(90, 56)
+    back_btn.setMinimumSize(72, 36)
     back_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     back_btn.setStyleSheet(_RED_STYLE)
     back_btn.clicked.connect(_backspace)
     grid.addWidget(back_btn, 3, 2)
-    vbox.addLayout(grid)
+    vbox.addLayout(grid, 1)
 
     submit_btn = QPushButton(submit_label)
-    submit_btn.setMinimumHeight(52)
-    submit_btn.setFont(QFont("Arial", 16, QFont.Bold))
+    submit_btn.setFixedHeight(40)
+    submit_btn.setFont(QFont("Arial", 14, QFont.Bold))
     submit_btn.setStyleSheet(_GREEN_STYLE)
     if on_submit:
         submit_btn.clicked.connect(lambda: on_submit(digits["value"]))
     vbox.addWidget(submit_btn)
 
     cancel_btn = QPushButton("Cancel")
-    cancel_btn.setFont(QFont("Arial", 14))
+    cancel_btn.setFixedHeight(26)
+    cancel_btn.setFont(QFont("Arial", 12))
     cancel_btn.setCursor(Qt.PointingHandCursor)
     cancel_btn.setStyleSheet(_CANCEL_STYLE)
     if on_cancel:
@@ -167,6 +181,7 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
     vbox.addWidget(cancel_btn)
 
     return card, {
+        "card": card,
         "digits": digits,
         "display": display,
         "destination_label": destination_label,
@@ -199,6 +214,7 @@ class KeypadOverlay(QWidget):
             on_cancel=self.hide,
         )
         self._keypad = widgets
+        self._card = card
         layout.addWidget(card)
 
     def _submit(self, student_id):
@@ -213,6 +229,7 @@ class KeypadOverlay(QWidget):
         self._keypad["clear"]()
         if self.parent:
             self.setGeometry(self.parent.rect())
+        _size_id_keypad_card(self._card, self)
         self.setVisible(True)
         self.raise_()
 
@@ -223,6 +240,8 @@ class KeypadOverlay(QWidget):
         super().resizeEvent(event)
         if self.parent:
             self.setGeometry(self.parent.rect())
+        if hasattr(self, "_card"):
+            _size_id_keypad_card(self._card, self)
 
 
 class OnScreenKeyboard(QWidget):
@@ -2095,23 +2114,15 @@ class VisitOverlay(QWidget):
             on_cancel=self.hide,
         )
         self._keypad = widgets
+        self._card = card
         # Kept so existing call sites that read self.input / self.main_title still work.
         self.input = QLineEdit()
         self.input.hide()
         self.main_title = widgets["destination_label"]
         self.status_label = QLabel("Ready to scan")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setFont(QFont("Arial", 12))
-        self.status_label.setStyleSheet(f"color: {self.ACCENT_COLOR};")
-        card.layout().insertWidget(2, self.status_label)
-
+        self.status_label.hide()
         self.message_label = QLabel("")
-        self.message_label.setAlignment(Qt.AlignCenter)
-        self.message_label.setWordWrap(True)
-        self.message_label.setFont(QFont("Arial", 12))
-        self.message_label.setStyleSheet("color: #b71c1c;")
         self.message_label.hide()
-        card.layout().insertWidget(3, self.message_label)
 
         layout.addWidget(card)
 
@@ -2123,6 +2134,8 @@ class VisitOverlay(QWidget):
         super().resizeEvent(event)
         if self.parent:
             self.setGeometry(self.parent.rect())
+        if hasattr(self, "_card"):
+            _size_id_keypad_card(self._card, self)
 
     def _has_active_visit_of_this_type(self):
         db = getattr(self.parent, "db", None)
@@ -2147,20 +2160,25 @@ class VisitOverlay(QWidget):
             self._keypad["submit_btn"].setText("CREATE PASS")
         if self.parent:
             self.setGeometry(self.parent.rect())
+        _size_id_keypad_card(self._card, self)
         self.setVisible(True)
         self.raise_()
         self.clear_message()
         self.status_label.setText("Ready to scan")
-        self.status_label.setStyleSheet(f"color: {self.ACCENT_COLOR};")
 
     def show_message(self, message, duration=4000):
         self.message_label.setText(message)
-        self.message_label.show()
+        self.main_title.setText(message)
+        self.main_title.setStyleSheet("color: #b71c1c;")
         self._message_timer.start(duration)
 
     def clear_message(self):
         self.message_label.hide()
         self.message_label.setText("")
+        dest = self.DESTINATION_LABEL or self.VISIT_TYPE
+        ending = bool(self.END_TITLE and self._has_active_visit_of_this_type())
+        self.main_title.setStyleSheet("color: #64748b;")
+        self.main_title.setText(self.END_TITLE if ending else (f"Destination: {dest}" if dest else ""))
 
     def _call_entry(self, **kwargs):
         getattr(self.parent, self.ENTRY_METHOD)(**kwargs)

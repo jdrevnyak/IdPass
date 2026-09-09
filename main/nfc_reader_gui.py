@@ -64,8 +64,9 @@ class NFCReaderGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Student Hall Pass System")
-        
-        # Set up full screen mode
+        # Kiosk panel is 800x480; pin the window to that canvas, then go fullscreen.
+        self.setMinimumSize(800, 480)
+        self.resize(800, 480)
         self.showFullScreen()
 
         # Load the classroom/device configuration

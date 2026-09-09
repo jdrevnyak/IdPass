@@ -187,12 +187,8 @@ class DestinationTile(QAbstractButton):
         self._active = False
         self.setText(destination)
         self.setCursor(Qt.PointingHandCursor)
-        # Tiles stay roughly square regardless of screen height so the kiosk
-        # keeps the proportions of the approved design.
-        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
-        self.setMinimumSize(110, 120)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(90, 90)
 
     def set_active(self, active):
         """Switch between 'go here' and 'end your visit' presentation."""
@@ -206,12 +202,6 @@ class DestinationTile(QAbstractButton):
 
     def sizeHint(self):
         return QSize(166, 180)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return int(width * 1.08)
 
     def _label(self):
         return f"END {self.destination}".upper() if self._active else self.destination.upper()
@@ -312,10 +302,11 @@ class HomeScreen(QWidget):
 
     DESTINATIONS = ("Bathroom", "Nurse", "Water", "Guidance")
 
-    _BODY_MARGINS = (20, 18, 20, 20)
-    _CARD_PAD = 18
-    _GAP = 14
-    _STATUS_H = 52
+    # Tight padding so the card fills an 800x480 kiosk without a dark band.
+    _BODY_MARGINS = (10, 8, 10, 8)
+    _CARD_PAD = 12
+    _GAP = 10
+    _STATUS_H = 44
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -329,7 +320,7 @@ class HomeScreen(QWidget):
         # --- Top bar -------------------------------------------------------
         self.top_bar = QFrame()
         self.top_bar.setAttribute(Qt.WA_StyledBackground, True)
-        self.top_bar.setFixedHeight(48)
+        self.top_bar.setFixedHeight(40)
         self.top_bar.setStyleSheet(f"background: {THEME['topbar_bg']};")
         bar = QHBoxLayout(self.top_bar)
         bar.setContentsMargins(20, 0, 12, 0)
@@ -378,7 +369,8 @@ class HomeScreen(QWidget):
             tile = DestinationTile(destination)
             self.tiles[destination] = tile
             tile_row.addWidget(tile, 1)
-        card_layout.addWidget(self._tile_host, 0)
+        self._tile_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        card_layout.addWidget(self._tile_host, 1)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
@@ -386,8 +378,8 @@ class HomeScreen(QWidget):
         self.prompt = QLabel("Select your hall pass destination")
         self.prompt.setAlignment(Qt.AlignCenter)
         self.prompt.setWordWrap(True)
-        self.prompt.setFont(QFont("Arial", 15))
-        self.prompt.setMinimumHeight(self._STATUS_H)
+        self.prompt.setFont(QFont("Arial", 13))
+        self.prompt.setFixedHeight(self._STATUS_H)
         self.prompt.setCursor(Qt.PointingHandCursor)
         self.prompt.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.prompt.setStyleSheet(
@@ -397,12 +389,12 @@ class HomeScreen(QWidget):
         status_row.addWidget(self.prompt, 1)
 
         self.system_pill = StatusPill("System Ready")
-        self.system_pill.setMinimumHeight(self._STATUS_H)
+        self.system_pill.setFixedHeight(self._STATUS_H)
         status_row.addWidget(self.system_pill, 0)
         card_layout.addLayout(status_row, 0)
 
-        body_layout.addWidget(card, 0)
-        body_layout.addStretch(1)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        body_layout.addWidget(card, 1)
         root.addWidget(self._body, 1)
 
     def set_datetime_text(self, text):
@@ -410,29 +402,6 @@ class HomeScreen(QWidget):
 
     def set_wifi_connected(self, connected):
         self.wifi_icon.set_color("#e2e8f0" if connected else "#ef4444")
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._sync_tile_height()
-
-    def _sync_tile_height(self):
-        """Keep tiles near-square, clamped so the card always fits the screen."""
-        count = len(self.tiles)
-        left, top, right, bottom = self._BODY_MARGINS
-        # Derived from our own width rather than the host's, which still holds
-        # its pre-layout size while this runs from resizeEvent.
-        available_width = self.width() - left - right - self._CARD_PAD * 2
-        if not count or available_width <= 0:
-            return
-
-        tile_width = (available_width - self._GAP * (count - 1)) / count
-        desired = int(tile_width * 1.08)
-
-        budget = (self.height() - self.top_bar.height() - top - bottom
-                  - self._CARD_PAD * 2 - self._GAP - self._STATUS_H)
-        if budget > 120:
-            desired = min(desired, budget)
-        self._tile_host.setFixedHeight(max(110, desired))
 
 
 class StatusIndicator(QFrame):
