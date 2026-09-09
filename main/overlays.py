@@ -1755,7 +1755,9 @@ class SettingsOverlay(QWidget):
             else:
                 try:
                     result = subprocess.run(
-                        ["sudo", "bash", script],
+                        # sudo drops the environment, so the interpreter the app
+                        # runs under is handed over as an explicit assignment.
+                        ["sudo", f"IDPASS_APP_PYTHON={sys.executable}", "bash", script],
                         capture_output=True, text=True, timeout=180,
                     )
                     detail = (result.stdout or result.stderr or "").strip()
@@ -1779,6 +1781,15 @@ class SettingsOverlay(QWidget):
         for name, ok, msg in messages:
             all_ok = all_ok and ok
             lines.append(f"{name}: {'OK' if ok else 'FAILED'}\n{msg}")
+
+        # Packages only count if this interpreter can see them, so say which one it is.
+        try:
+            import escpos
+            escpos_where = getattr(escpos, "__file__", "unknown location")
+        except Exception as e:
+            escpos_where = f"NOT importable ({e})"
+        lines.append(f"app python: {sys.executable}\nescpos: {escpos_where}")
+
         text = "\n\n".join(lines)
         if hasattr(self, "printer_status_label"):
             self.printer_status_label.setText(

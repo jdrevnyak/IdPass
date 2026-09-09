@@ -49,39 +49,47 @@ if [ -z "$PROJECT_DIR" ]; then
     done
 fi
 
-if [ -n "$PROJECT_DIR" ]; then
+# The app exports the interpreter it is actually running under. Installing into
+# any other venv leaves the import failing however well pip reports it went.
+VENV_PY="${IDPASS_APP_PYTHON:-}"
+if [ -n "$VENV_PY" ] && [ ! -e "$VENV_PY" ]; then
+    echo "Ignoring IDPASS_APP_PYTHON=$VENV_PY (not found)"
+    VENV_PY=""
+fi
+
+if [ -z "$VENV_PY" ] && [ -n "$PROJECT_DIR" ]; then
     if [ ! -e "$PROJECT_DIR/venv/bin/python" ] && [ ! -e "$PROJECT_DIR/venv/bin/python3" ]; then
         echo "Creating venv at $PROJECT_DIR/venv ..."
         python3 -m venv --system-site-packages "$PROJECT_DIR/venv" \
             || echo "Warning: could not create venv"
     fi
-    VENV_PY=""
     for py in "$PROJECT_DIR/venv/bin/python" "$PROJECT_DIR/venv/bin/python3"; do
         if [ -e "$py" ]; then
             VENV_PY="$py"
             break
         fi
     done
-    VENV_PIP="$PROJECT_DIR/venv/bin/pip"
     if [ -z "$VENV_PY" ]; then
         echo "ERROR: venv python not found under $PROJECT_DIR/venv/bin"
-    else
-        echo "Installing printer packages with $VENV_PY -m pip (not system pip) ..."
-        if [ -n "$REAL_USER" ] && [ "$(id -u)" -eq 0 ]; then
-            sudo -u "$REAL_USER" "$VENV_PY" -m pip install \
-                "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
-                || echo "Warning: could not install printer packages; continuing with udev setup."
-            echo "python-escpos check:"
-            sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
-                || echo "Warning: escpos import failed after install."
-        else
-            "$VENV_PY" -m pip install \
-                "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
-                || echo "Warning: could not install printer packages; continuing with udev setup."
-        fi
     fi
+fi
+
+if [ -z "$VENV_PY" ]; then
+    echo "No app interpreter or project venv found; skipping Python package install."
 else
-    echo "No project directory found; skipping Python package install."
+    echo "Installing printer packages with $VENV_PY -m pip (not system pip) ..."
+    if [ -n "$REAL_USER" ] && [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$REAL_USER" "$VENV_PY" -m pip install \
+            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+            || echo "Warning: could not install printer packages; continuing with udev setup."
+        echo "python-escpos check:"
+        sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
+            || echo "Warning: escpos import failed after install."
+    else
+        "$VENV_PY" -m pip install \
+            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+            || echo "Warning: could not install printer packages; continuing with udev setup."
+    fi
 fi
 
 # The app needs lp/plugdev for USB and dialout for serial/TTL UARTs.
