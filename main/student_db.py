@@ -148,6 +148,19 @@ class StudentDatabase:
             FOREIGN KEY (student_uid) REFERENCES students (id)
         )
         ''')
+
+        # Create guidance_visits table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS guidance_visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_uid TEXT,
+            classroom_id TEXT DEFAULT '',
+            visit_start TIMESTAMP,
+            visit_end TIMESTAMP,
+            duration_minutes INTEGER,
+            FOREIGN KEY (student_uid) REFERENCES students (id)
+        )
+        ''')
         
         self.conn.commit()
         self._ensure_classroom_columns()
@@ -155,7 +168,7 @@ class StudentDatabase:
     def _ensure_classroom_columns(self):
         """Ensure legacy databases contain the classroom_id columns."""
         cursor = self.conn.cursor()
-        tables = ["attendance", "bathroom_breaks", "nurse_visits", "water_visits"]
+        tables = ["attendance", "bathroom_breaks", "nurse_visits", "water_visits", "guidance_visits"]
         for table in tables:
             cursor.execute(f"PRAGMA table_info({table})")
             columns = [row[1] for row in cursor.fetchall()]
@@ -402,7 +415,7 @@ class StudentDatabase:
         return formatted_results
 
     def get_active_outings(self):
-        """Return list of active outings (bathroom, nurse, water) with start times."""
+        """Return list of active outings (bathroom, nurse, water, guidance) with start times."""
         cursor = self.conn.cursor()
         outings = []
 
@@ -456,6 +469,18 @@ class StudentDatabase:
             start_dt = parse_dt(start)
             if start_dt:
                 outings.append({'type': 'Water', 'student_name': name, 'student_uid': uid or '', 'start': start_dt})
+
+        cursor.execute("""
+            SELECT s.name, g.visit_start, g.student_uid
+            FROM guidance_visits g
+            JOIN students s ON g.student_uid = s.id OR g.student_uid = s.student_id
+            WHERE g.visit_end IS NULL AND (g.classroom_id = ? OR g.classroom_id IS NULL OR g.classroom_id = '')
+            ORDER BY g.visit_start ASC
+        """, (self.classroom_id,))
+        for name, start, uid in cursor.fetchall():
+            start_dt = parse_dt(start)
+            if start_dt:
+                outings.append({'type': 'Guidance', 'student_name': name, 'student_uid': uid or '', 'start': start_dt})
 
         outings.sort(key=lambda o: o['start'])
         return outings
@@ -746,6 +771,87 @@ class StudentDatabase:
             self.conn.rollback()
             return False, str(e)
 
+    def is_at_guidance(self, identifier):
+        """Check if student is currently at guidance by identifier (NFC UID or student_id)"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, visit_start 
+            FROM guidance_visits 
+            WHERE student_uid = ? 
+            AND visit_end IS NULL
+            AND classroom_id = ?
+        """, (identifier, self.classroom_id))
+        result = cursor.fetchone()
+        return result is not None
+    
+    def start_guidance_visit(self, nfc_uid=None, student_id=None):
+        """Start a guidance visit for a student by identifier (NFC UID or student_id)"""
+        identifier = self.get_identifier(nfc_uid, student_id)
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT id FROM guidance_visits 
+                WHERE student_uid = ? 
+                AND visit_end IS NULL
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
+            if cursor.fetchone():
+                return False, "Student is already at guidance"
+            current_time = datetime.now()
+            cursor.execute("""
+                INSERT INTO guidance_visits (student_uid, classroom_id, visit_start)
+                VALUES (?, ?, ?)
+            """, (identifier, self.classroom_id, current_time))
+            self.conn.commit()
+            return True, "Guidance visit started"
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+    
+    def end_guidance_visit(self, nfc_uid=None, student_id=None):
+        """End a guidance visit for a student by identifier (NFC UID or student_id)"""
+        identifier = self.get_identifier(nfc_uid, student_id)
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT id, visit_start 
+                FROM guidance_visits
+                WHERE student_uid = ? 
+                AND visit_end IS NULL
+                AND classroom_id = ?
+            """, (identifier, self.classroom_id))
+            result = cursor.fetchone()
+            if not result:
+                return False, "Student is not at guidance"
+            visit_id, visit_start = result
+            visit_end = datetime.now()
+            try:
+                if isinstance(visit_start, str):
+                    try:
+                        start_dt = datetime.fromisoformat(visit_start)
+                    except ValueError:
+                        try:
+                            start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S.%f")
+                        except ValueError:
+                            start_dt = datetime.strptime(visit_start, "%Y-%m-%d %H:%M:%S")
+                else:
+                    start_dt = visit_start
+            except Exception as e:
+                print(f"Error parsing visit_start: {e}")
+                start_dt = visit_end
+            
+            duration = int((visit_end - start_dt).total_seconds() / 60)
+            cursor.execute("""
+                UPDATE guidance_visits
+                SET visit_end = ?, duration_minutes = ?
+                WHERE id = ?
+            """, (visit_end, duration, visit_id))
+            self.conn.commit()
+            return True, "Guidance visit ended"
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+
     def _parse_sqlite_datetime(self, val):
         if val is None:
             return None
@@ -786,7 +892,7 @@ class StudentDatabase:
         return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
 
     def auto_end_breaks_at_period_end(self):
-        """End active bathroom/nurse/water outings at the end of the period that contained their start time."""
+        """End active bathroom/nurse/water/guidance outings at the end of the period that contained their start time."""
         now = datetime.now()
         cursor = self.conn.cursor()
         try:
@@ -856,6 +962,30 @@ class StudentDatabase:
                 cursor.execute(
                     """
                     UPDATE water_visits
+                    SET visit_end = ?, duration_minutes = ?
+                    WHERE id = ?
+                    """,
+                    (pe, duration, visit_id),
+                )
+
+            cursor.execute(
+                """
+                SELECT id, visit_start FROM guidance_visits
+                WHERE visit_end IS NULL AND classroom_id = ?
+                """,
+                (self.classroom_id,),
+            )
+            for visit_id, visit_start in cursor.fetchall():
+                start_dt = self._parse_sqlite_datetime(visit_start)
+                if not start_dt:
+                    continue
+                pe = self._period_end_datetime_for_timestamp(start_dt)
+                if not pe or now < pe:
+                    continue
+                duration = int((pe - start_dt).total_seconds() / 60)
+                cursor.execute(
+                    """
+                    UPDATE guidance_visits
                     SET visit_end = ?, duration_minutes = ?
                     WHERE id = ?
                     """,

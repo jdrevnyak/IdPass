@@ -71,7 +71,8 @@ class FirebaseDatabase:
             updated = {
                 'bathroom_breaks': 0,
                 'nurse_visits': 0,
-                'water_visits': 0
+                'water_visits': 0,
+                'guidance_visits': 0
             }
 
             def _backfill_active(collection_name, end_field):
@@ -87,6 +88,7 @@ class FirebaseDatabase:
             _backfill_active('bathroom_breaks', 'break_end')
             _backfill_active('nurse_visits', 'visit_end')
             _backfill_active('water_visits', 'visit_end')
+            _backfill_active('guidance_visits', 'visit_end')
 
             print(f"[FIREBASE] Backfill complete: {updated}")
         except Exception as exc:
@@ -426,7 +428,7 @@ class FirebaseDatabase:
             return False
     
     def has_students_out(self) -> bool:
-        """Check if any students are currently out (on bathroom break, at nurse, or at water fountain)"""
+        """Check if any students are currently out (bathroom, nurse, water, or guidance)"""
         try:
             # Check for active bathroom breaks
             breaks_ref = self.db.collection('bathroom_breaks')
@@ -465,6 +467,19 @@ class FirebaseDatabase:
             )
             
             if len(list(water_query)) > 0:
+                return True
+
+            # Check for active guidance visits
+            guidance_ref = self.db.collection('guidance_visits')
+            guidance_query = (
+                guidance_ref
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
+                .limit(1)
+                .get()
+            )
+
+            if len(list(guidance_query)) > 0:
                 return True
             
             return False
@@ -525,6 +540,7 @@ class FirebaseDatabase:
         _collect('bathroom_breaks', 'break_end', 'Bathroom', 'break_start')
         _collect('nurse_visits', 'visit_end', 'Nurse', 'visit_start')
         _collect('water_visits', 'visit_end', 'Water', 'visit_start')
+        _collect('guidance_visits', 'visit_end', 'Guidance', 'visit_start')
 
         outings.sort(key=lambda o: o['start'])
         return outings
@@ -534,10 +550,10 @@ class FirebaseDatabase:
     # ------------------------------------------------------------------
 
     def start_outing_listeners(self, classroom_id: str, callback: Callable[[List[Dict]], None]):
-        """Start 3 on_snapshot listeners for active outings in this classroom.
+        """Start 4 on_snapshot listeners for active outings in this classroom.
 
         *callback* receives a merged, sorted list of active outings every time any
-        of the three collections changes.  The callback is invoked from a
+        of the four collections changes.  The callback is invoked from a
         background gRPC thread; callers must handle thread safety.
         """
         self.stop_outing_listeners()
@@ -547,12 +563,14 @@ class FirebaseDatabase:
             "bathroom_breaks": [],
             "nurse_visits": [],
             "water_visits": [],
+            "guidance_visits": [],
         }
 
         specs = [
             ("bathroom_breaks", "break_end",  "Bathroom", "break_start"),
             ("nurse_visits",    "visit_end",  "Nurse",    "visit_start"),
             ("water_visits",    "visit_end",  "Water",    "visit_start"),
+            ("guidance_visits", "visit_end",  "Guidance", "visit_start"),
         ]
 
         for collection_name, end_field, outing_type, time_field in specs:
@@ -593,7 +611,7 @@ class FirebaseDatabase:
             watcher = query.on_snapshot(handler)
             self._outing_watchers.append(watcher)
 
-        print(f"[FIREBASE] Started 3 outing listeners for classroom '{classroom_id}'")
+        print(f"[FIREBASE] Started 4 outing listeners for classroom '{classroom_id}'")
 
     def stop_outing_listeners(self):
         """Unsubscribe all active outing snapshot listeners."""
@@ -813,6 +831,79 @@ class FirebaseDatabase:
         except Exception as e:
             print(f"[FIREBASE] Error ending water visit: {e}")
             return False, str(e)
+
+    def is_at_guidance(self, identifier: str) -> bool:
+        """Check if student is currently at guidance"""
+        try:
+            guidance_ref = self.db.collection('guidance_visits')
+            query = (
+                guidance_ref
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
+                .limit(1)
+                .get()
+            )
+            return len(list(query)) > 0
+        except Exception as e:
+            print(f"[FIREBASE] Error checking guidance status: {e}")
+            return False
+
+    def start_guidance_visit(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
+        """Start a guidance visit for a student"""
+        try:
+            identifier = self.get_identifier(nfc_uid, student_id)
+            if self.is_at_guidance(identifier):
+                print(f"[FIREBASE] Student {identifier} is already at guidance, ending current visit...")
+                success, message = self.end_guidance_visit(nfc_uid=nfc_uid, student_id=student_id)
+                if success:
+                    print(f"[FIREBASE] Ended previous guidance visit: {message}")
+                    return True, "Previous guidance visit ended, ready for new activities"
+                else:
+                    return False, f"Failed to end previous guidance visit: {message}"
+
+            student_name = self.get_student_name(identifier)
+            current_time = datetime.now().isoformat()
+            visit_data = {
+                'student_uid': identifier,
+                'student_name': student_name,
+                'visit_start': current_time,
+                'visit_end': None,
+                'duration_minutes': None
+            }
+            visit_data.update(self._classroom_metadata())
+            self.db.collection('guidance_visits').add(visit_data)
+            return True, "Guidance visit started"
+        except Exception as e:
+            print(f"[FIREBASE] Error starting guidance visit: {e}")
+            return False, str(e)
+
+    def end_guidance_visit(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Tuple[bool, str]:
+        """End a guidance visit for a student"""
+        try:
+            identifier = self.get_identifier(nfc_uid, student_id)
+            guidance_ref = self.db.collection('guidance_visits')
+            query = (
+                guidance_ref
+                .where(filter=_FF('student_uid', '==', identifier))
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
+                .get()
+            )
+            for doc in query:
+                data = doc.to_dict()
+                start_time = datetime.fromisoformat(data['visit_start'])
+                end_time = datetime.now()
+                duration = int((end_time - start_time).total_seconds() / 60)
+                doc.reference.update({
+                    'visit_end': end_time.isoformat(),
+                    'duration_minutes': duration
+                })
+                return True, "Guidance visit ended"
+            return False, "Student is not at guidance"
+        except Exception as e:
+            print(f"[FIREBASE] Error ending guidance visit: {e}")
+            return False, str(e)
     
     def get_today_breaks(self) -> List[Tuple]:
         """Get all bathroom breaks for today"""
@@ -891,7 +982,7 @@ class FirebaseDatabase:
 
     def _auto_end_breaks_and_visits_at_period_end(self):
         """
-        End active bathroom breaks, nurse visits, and water visits when now is past the
+        End active bathroom breaks, nurse visits, water visits, and guidance visits when now is past the
         scheduled end of the period that contained each outing's start time.
         """
         try:
@@ -1007,6 +1098,43 @@ class FirebaseDatabase:
 
                 except Exception as e:
                     print(f"[FIREBASE AUTO-END] Error ending water visit: {e}")
+
+            # Auto-end guidance visits
+            guidance_ref = self.db.collection('guidance_visits')
+            guidance_query = (
+                guidance_ref
+                .where(filter=_FF('visit_end', '==', None))
+                .where(filter=_FF('classroom_id', '==', self._classroom_id_value()))
+                .get()
+            )
+
+            for doc in guidance_query:
+                try:
+                    data = doc.to_dict()
+                    visit_start_str = data.get('visit_start')
+
+                    if not visit_start_str:
+                        continue
+                    visit_start_dt = datetime.fromisoformat(visit_start_str)
+                    period_end_dt = self._period_end_datetime_for_timestamp(visit_start_dt)
+                    if not period_end_dt:
+                        continue
+                    if now < period_end_dt:
+                        continue
+
+                    duration = int((period_end_dt - visit_start_dt).total_seconds() / 60)
+                    doc.reference.update({
+                        'visit_end': period_end_dt.isoformat(),
+                        'duration_minutes': duration
+                    })
+
+                    print(
+                        f"[FIREBASE AUTO-END] Ended guidance visit for {data['student_uid']} "
+                        f"at period end {period_end_dt} (duration: {duration}min)"
+                    )
+
+                except Exception as e:
+                    print(f"[FIREBASE AUTO-END] Error ending guidance visit: {e}")
 
         except Exception as e:
             print(f"[FIREBASE AUTO-END] Error in auto-end breaks and visits: {e}")

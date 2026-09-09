@@ -12,10 +12,8 @@ import serial.tools.list_ports
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy)
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QFont
 
 # GPIO imports for Raspberry Pi LED control
 try:
@@ -28,13 +26,14 @@ except ImportError:
 
 # Import our custom modules
 from online_first_db import OnlineFirstDatabase
-from widgets import AnalogClock, StatusIndicator
+from widgets import HomeScreen
 from dialogs import AddStudentDialog, ImportDialog
-from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay, 
-                     NurseOverlay, WaterOverlay, AddStudentOverlay, StudentSelectionOverlay,
-                     BreakTypePickerOverlay, PasswordOverlay)
+from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay,
+                     NurseOverlay, WaterOverlay, GuidanceOverlay, AddStudentOverlay,
+                     StudentSelectionOverlay, BreakTypePickerOverlay, PasswordOverlay)
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
+from network_status import get_wifi_info
 from printer import ThermalPrinter
 from student_db import normalize_nfc_uid, normalize_student_id_key, PERIODS
 
@@ -48,6 +47,7 @@ class NFCReaderGUI(QMainWindow):
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
+    BASE_PROMPT = "Select your hall pass destination"
     _MIN_PRESS_DURATION_S = 0.1  # 100ms ghost-touch filter threshold
     _INFO_MESSAGE_MS = 3500
     _ERROR_MESSAGE_MS = 7000
@@ -89,109 +89,21 @@ class NFCReaderGUI(QMainWindow):
         self.serial_connection = None
         self.connection_error_count = 0
         
-        # Create main widget and layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QVBoxLayout(main_widget)
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Header with date and time
-        self.header = QLabel()
-        self.header.setAlignment(Qt.AlignCenter)
-        self.header.setFont(QFont('Arial', 32, QFont.Bold))
-        self.header.setStyleSheet("color: #fff; background-color: #23405a; padding: 24px 0 24px 0; border-top-left-radius: 24px; border-top-right-radius: 24px;")
-        main_layout.addWidget(self.header)
-        
-        # Center layout for clock and buttons
-        center_layout = QHBoxLayout()
-        center_layout.setContentsMargins(20, 12, 20, 12)
-        center_layout.setSpacing(40)
-        
-        # Left: Analog clock
-        clock_layout = QVBoxLayout()
-        clock_layout.setAlignment(Qt.AlignCenter)
-        self.analog_clock = AnalogClock()
-        clock_layout.addWidget(self.analog_clock)
-        center_layout.addLayout(clock_layout)
-        
-        # Right: Buttons
-        button_layout = QVBoxLayout()
-        button_layout.setAlignment(Qt.AlignVCenter)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(18)
-        self.break_start_button = QPushButton("Bathroom")
-        self.nurse_button = QPushButton("Nurse")
-        self.water_button = QPushButton("Water")
-        for btn in [self.break_start_button, self.nurse_button, self.water_button]:
-            btn.setMinimumWidth(300)
-            btn.setMaximumWidth(340)
-            btn.setMinimumHeight(58)
-            btn.setMaximumHeight(86)
-            btn.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
-            btn.setFont(QFont('Arial', 28, QFont.Bold))
-            btn.setCursor(Qt.PointingHandCursor)
-        self.break_start_button.setStyleSheet('''
-            QPushButton {
-                background-color: #2bb3a3;
-                color: white;
-                border-radius: 24px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #249e90;
-            }
-            QPushButton:pressed {
-                background-color: #1e857a;
-            }
-        ''')
-        self.nurse_button.setStyleSheet('''
-            QPushButton {
-                background-color: #23405a;
-                color: white;
-                border-radius: 24px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #1a2e3d;
-            }
-            QPushButton:pressed {
-                background-color: #162534;
-            }
-        ''')
-        self.water_button.setStyleSheet('''
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                border-radius: 24px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-            QPushButton:pressed {
-                background-color: #21618c;
-            }
-        ''')
-        button_layout.addStretch(1)
-        button_layout.addWidget(self.break_start_button)
-        button_layout.addStretch(1)
-        button_layout.addWidget(self.nurse_button)
-        button_layout.addStretch(1)
-        button_layout.addWidget(self.water_button)
-        button_layout.addStretch(1)
-        center_layout.addLayout(button_layout)
-        
-        main_layout.addLayout(center_layout)
-        
-        # Prompt at the bottom
-        self.prompt = QLabel("Tap your ID or enter ID number")
-        self.prompt.setAlignment(Qt.AlignCenter)
-        self.prompt.setFont(QFont('Arial', 24))
-        self.prompt.setStyleSheet("color: #23405a; background: #f5f7fa; padding: 24px 0 24px 0; border-bottom-left-radius: 24px; border-bottom-right-radius: 24px;")
-        main_layout.addWidget(self.prompt)
-        self._base_prompt_text = "Tap your ID or enter ID number"
+        # Home screen: dark top bar over a white card of destination tiles
+        self.home = HomeScreen()
+        self.setCentralWidget(self.home)
+
+        self.header = self.home.top_bar
+        self.prompt = self.home.prompt
+        self.destination_tiles = self.home.tiles
+        self.break_start_button = self.destination_tiles["Bathroom"]
+        self.nurse_button = self.destination_tiles["Nurse"]
+        self.water_button = self.destination_tiles["Water"]
+        self.guidance_button = self.destination_tiles["Guidance"]
+
+        self._base_prompt_text = self.BASE_PROMPT
         self._prompt_override_active = False
+        self._current_period = ""
         self.refresh_classroom_prompt()
         
         # Timer for updating header date and time
@@ -207,6 +119,12 @@ class NFCReaderGUI(QMainWindow):
         self.led_timer.timeout.connect(self.update_gpio_led_status)
         self.led_timer.start(10000)  # Update every 10 seconds
         self.update_gpio_led_status()  # Initial update
+
+        # Timer for the top-bar Wi-Fi glyph (shells out to nmcli, so keep it slow)
+        self.wifi_timer = QTimer()
+        self.wifi_timer.timeout.connect(self.update_wifi_indicator)
+        self.wifi_timer.start(30000)
+        self.update_wifi_indicator()
         
         # Serial reading timer
         self.timer = QTimer()
@@ -233,11 +151,12 @@ class NFCReaderGUI(QMainWindow):
         
         # Initialize overlays
         self.keypad_overlay = KeypadOverlay(self)
-        self.analog_clock.mousePressEvent = self.show_keypad_overlay
+        # The analog clock is gone, so the status pill is the manual-entry target.
+        self.prompt.installEventFilter(self)
         self.settings_overlay = SettingsOverlay(self)
         self.password_overlay = PasswordOverlay(self)
         self.password_overlay.authenticated.connect(self._show_settings_overlay)
-        self.header.installEventFilter(self)
+        self.home.settings_button.clicked.connect(self._show_pin_overlay)
         self.bathroom_mode = False
         self.break_start_button.clicked.connect(self.show_bathroom_overlay)
         self.bathroom_overlay = BathroomOverlay(self)
@@ -250,9 +169,13 @@ class NFCReaderGUI(QMainWindow):
         self.water_button.clicked.connect(self.show_water_overlay)
         self.water_overlay = WaterOverlay(self)
 
+        # Connect guidance button to guidance overlay
+        self.guidance_button.clicked.connect(self.show_guidance_overlay)
+        self.guidance_overlay = GuidanceOverlay(self)
+
         # Ghost-touch protection: track press timestamps on visit buttons
         self._button_press_times = {}
-        for btn in (self.break_start_button, self.nurse_button, self.water_button):
+        for btn in self.destination_tiles.values():
             btn.installEventFilter(self)
             self._button_press_times[btn] = None
         
@@ -351,8 +274,11 @@ class NFCReaderGUI(QMainWindow):
             classroom_display = f"Classroom {self.classroom_id}"
         else:
             classroom_display = "Classroom not configured"
-            
-        self._base_prompt_text = f"{classroom_display}\nTap your ID or enter ID number"
+
+        # The classroom now lives beside the cap glyph in the top bar, leaving
+        # the status pill free for the single call-to-action from the design.
+        self.home.classroom_label.setText(classroom_display)
+        self._base_prompt_text = self.BASE_PROMPT
         self.prompt.setText(self._base_prompt_text)
 
     def save_classroom_settings(self, classroom_id, classroom_label, teacher_name):
@@ -505,11 +431,14 @@ class NFCReaderGUI(QMainWindow):
                 QMessageBox.critical(self, "Import Error", str(e))
 
     def update_header_datetime(self):
-        """Update the header with current date and time"""
+        """Update the top bar with current date, time and period."""
         now = datetime.now()
-        date_str = now.strftime('%a, %b %d, %Y')  # Abbreviated day and month
-        time_str = now.strftime('%I:%M %p').lstrip('0')
-        self.header.setText(f"{date_str}  {time_str}")
+        date_str = now.strftime('%d %b %Y').upper()
+        time_str = now.strftime('%I:%M %p')
+        text = f"{date_str} {time_str}"
+        if self._current_period:
+            text += f" | {self._current_period}"
+        self.home.set_datetime_text(text)
     
     def setup_gpio(self):
         """Initialize GPIO pins for LED control"""
@@ -612,8 +541,9 @@ class NFCReaderGUI(QMainWindow):
 
         self._last_period = current_period
 
-        # Render period text inside clock instead of separate label
-        self.analog_clock.set_overlay_text(current_period)
+        # The period is rendered alongside the clock text in the top bar.
+        self._current_period = current_period
+        self.update_header_datetime()
 
     def _auto_end_all_breaks_during_passing(self):
         """Automatically end all active bathroom breaks during passing periods"""
@@ -682,7 +612,7 @@ class NFCReaderGUI(QMainWindow):
             except Exception as e:
                 print(f"[ERROR] GPIO cleanup failed: {e}")
 
-    def show_keypad_overlay(self, event):
+    def show_keypad_overlay(self):
         """Show the keypad overlay for manual ID entry"""
         self.keypad_overlay.show_overlay()
 
@@ -703,15 +633,20 @@ class NFCReaderGUI(QMainWindow):
             self.show_prompt_message(f"No student found with ID: {student_id}")
 
     def eventFilter(self, obj, event):
-        """Event filter for header tap (PIN gate) and ghost-touch guard on visit buttons."""
-        if obj == self.header and event.type() == event.MouseButtonRelease:
-            self.password_overlay.show_overlay()
+        """Event filter for status pill tap (manual entry) and the ghost-touch
+        guard on destination tiles."""
+        if obj == self.prompt and event.type() == event.MouseButtonRelease:
+            self.keypad_overlay.show_overlay()
         if obj in self._button_press_times and event.type() == event.MouseButtonPress:
             # Some touch panels emit multiple "press" events while contact is held.
             # Only store the first press time so elapsed duration is meaningful.
             if self._button_press_times.get(obj) is None:
                 self._button_press_times[obj] = datetime.now()
         return super().eventFilter(obj, event)
+
+    def _show_pin_overlay(self):
+        """Ask for the settings PIN after the gear icon is tapped."""
+        self.password_overlay.show_overlay()
 
     def _show_settings_overlay(self):
         """Show the settings overlay"""
@@ -747,6 +682,12 @@ class NFCReaderGUI(QMainWindow):
         if self._is_ghost_touch(self.water_button):
             return
         self.water_overlay.show_overlay()
+
+    def show_guidance_overlay(self):
+        """Show the guidance office overlay"""
+        if self._is_ghost_touch(self.guidance_button):
+            return
+        self.guidance_overlay.show_overlay()
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
@@ -1005,6 +946,75 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.show_error_message(message)
 
+    def process_guidance_entry(self, student_id=None, nfc_uid=None):
+        """Process guidance office visit entry/exit"""
+        # Unified logic: use nfc_uid if available, else use student_id
+        student_name_db = "Student"
+
+        if nfc_uid:
+            result = self.db.get_student_by_uid(nfc_uid)
+            if not result:
+                self.show_error_message("No student found with that card.")
+                return
+            student_id_db, student_name_db = result
+            identifier = normalize_nfc_uid(nfc_uid)
+            visit_kwargs = {"nfc_uid": identifier}
+        elif student_id:
+            student_id = normalize_student_id_key(student_id)
+            if not student_id:
+                self.show_error_message("No student information provided.")
+                return
+            result = self.db.get_student_by_student_id(student_id)
+            if not result:
+                self.show_error_message("No student found with that ID.")
+                return
+            nfc_uid_db, student_name_db = result
+            if nfc_uid_db:
+                identifier = normalize_nfc_uid(nfc_uid_db)
+                visit_kwargs = {"nfc_uid": identifier}
+            else:
+                identifier = student_id
+                visit_kwargs = {"student_id": identifier}
+        else:
+            self.show_error_message("No student information provided.")
+            return
+
+        if self._is_repeated_visit_action("Guidance", identifier):
+            return
+
+        print(f"[DEBUG] Guidance entry using identifier: {identifier}")
+        is_at_guidance = self.db.is_at_guidance(identifier)
+        if is_at_guidance:
+            # Start and end must key off the same identifier the check used.
+            success, message = self.db.end_guidance_visit(**visit_kwargs)
+            if success:
+                self.show_prompt_message("Guidance visit ended!")
+                self.update_gpio_led_status()  # Immediately update GPIO LED
+                QTimer.singleShot(3000, self.guidance_overlay.hide)
+            else:
+                self.show_error_message(message)
+        else:
+            success, message = self.db.start_guidance_visit(**visit_kwargs)
+            if success:
+                ended_existing_visit = "previous guidance visit ended" in str(message).lower()
+                if ended_existing_visit:
+                    self.show_prompt_message("Guidance visit ended!")
+                else:
+                    self.show_prompt_message("Guidance visit started!")
+                self.update_gpio_led_status()  # Immediately update GPIO LED
+                QTimer.singleShot(3000, self.guidance_overlay.hide)
+
+                if not ended_existing_visit:
+                    # Use the retrieved name and correct student ID
+                    print_name = student_name_db
+                    print_id = student_id_db if nfc_uid else student_id
+
+                    # Print only when a new visit was actually started.
+                    print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
+                    self._print_pass_async(print_name, print_id, "GUIDANCE PASS", print_location)
+            else:
+                self.show_error_message(message)
+
     def _close_serial(self):
         """Safely close the current serial connection."""
         if self.serial_connection:
@@ -1067,6 +1077,11 @@ class NFCReaderGUI(QMainWindow):
                             self.water_overlay.process_card(uid)
                             return
 
+                        if self.guidance_overlay.isVisible():
+                            print(f"[DEBUG] Processing guidance entry with UID: {uid}")
+                            self.guidance_overlay.process_card(uid)
+                            return
+
                         # Dismiss an open break picker before processing new tap
                         if self.break_picker_overlay.isVisible():
                             self.break_picker_overlay.hide()
@@ -1112,7 +1127,14 @@ class NFCReaderGUI(QMainWindow):
     def clear_prompt_message(self):
         """Clear the prompt message and restore default text"""
         self._prompt_override_active = False
-        self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
+        self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
+
+    def update_wifi_indicator(self):
+        """Colour the top-bar Wi-Fi glyph to reflect the current link state."""
+        try:
+            self.home.set_wifi_connected(bool(get_wifi_info().get("connected")))
+        except Exception as e:
+            print(f"[WIFI] Could not read status: {e}")
 
     def update_prompt_status(self):
         """If someone is out, show their name and elapsed time in the prompt."""
@@ -1134,24 +1156,22 @@ class NFCReaderGUI(QMainWindow):
             student_name = active.get('student_name', 'Student')
             self.prompt.setText(f"{label}: {student_name}\nElapsed: {minutes:02d}:{seconds:02d}")
         else:
-            self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else "Tap your ID or enter ID number")
+            self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
         self._update_visit_button_labels(outings)
 
     def _update_visit_button_labels(self, outings):
-        """Show End … on home buttons when that visit type is currently active."""
-        active_types = {o.get("type") for o in (outings or [])}
-        labels = (
-            (self.break_start_button, "Bathroom", "End bathroom break"),
-            (self.nurse_button, "Nurse", "End nurse visit"),
-            (self.water_button, "Water", "End water visit"),
-        )
-        for btn, start_label, end_label in labels:
-            if start_label in active_types:
-                btn.setText(end_label)
-                btn.setFont(QFont("Arial", 22, QFont.Bold))
-            else:
-                btn.setText(start_label)
-                btn.setFont(QFont("Arial", 28, QFont.Bold))
+        """Flip destination tiles to their 'End …' state while a visit is active."""
+        outings = outings or []
+        active_types = {o.get("type") for o in outings}
+        for destination, tile in self.destination_tiles.items():
+            tile.set_active(destination in active_types)
+
+        count = len(outings)
+        if count:
+            noun = "Student" if count == 1 else "Students"
+            self.home.system_pill.set_state("busy", f"{count} {noun} Out")
+        else:
+            self.home.system_pill.set_state("ok", "System Ready")
     
     def _on_break_type_selected(self, break_type, nfc_uid, student_id):
         """Route the break-type picker selection to the appropriate process method."""
@@ -1167,6 +1187,8 @@ class NFCReaderGUI(QMainWindow):
             self.process_nurse_entry(**kwargs)
         elif break_type == "Water":
             self.process_water_entry(**kwargs)
+        elif break_type == "Guidance":
+            self.process_guidance_entry(**kwargs)
 
     def handle_card_linked(self, nfc_uid, student_name):
         """Handle successful card linking."""
