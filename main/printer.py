@@ -311,22 +311,68 @@ def _ensure_home_venv():
 
 
 def _add_venv_site_packages(venv_python):
-    """Make packages installed into the venv importable in this process."""
+    """Make packages installed into the venv importable here.
+
+    Only site-packages built for the running Python version can be imported, so
+    a venv on a different version is reported as unusable instead of silently
+    installing somewhere this process can never read.
+    """
     import sys
 
+    running = f"python{sys.version_info.major}.{sys.version_info.minor}"
     venv_root = os.path.dirname(os.path.dirname(os.path.abspath(venv_python)))
+    added = False
+
     for site in glob.glob(os.path.join(venv_root, "lib", "python*", "site-packages")):
+        if os.path.basename(os.path.dirname(site)) != running:
+            print(f"[PRINTER] Skipping {site}: this app runs {running}")
+            continue
         if site not in sys.path:
             sys.path.insert(0, site)
             print(f"[PRINTER] Added to sys.path: {site}")
+        added = True
+
     win_site = os.path.join(venv_root, "Lib", "site-packages")
-    if os.path.isdir(win_site) and win_site not in sys.path:
-        sys.path.insert(0, win_site)
+    if os.path.isdir(win_site):
+        if win_site not in sys.path:
+            sys.path.insert(0, win_site)
+        added = True
+    return added
+
+
+def _pip_install(python_path, packages):
+    """Install packages with one interpreter. Returns (ok, combined_output)."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            [python_path, "-m", "pip", "install", "--upgrade", "pip"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except Exception:
+        pass
+
+    print(f"[PRINTER] Installing with {python_path}: {' '.join(packages)}")
+    try:
+        result = subprocess.run(
+            [python_path, "-m", "pip", "install", *packages],
+            capture_output=True, text=True, timeout=300,
+        )
+    except Exception as e:
+        return False, f"pip failed to start ({python_path}): {e}"
+
+    out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    if result.returncode != 0:
+        return False, out or f"pip exited {result.returncode}"
+    return True, out
 
 
 def ensure_printer_packages():
-    """Install printer deps into a project/home venv (never system Python)."""
-    import subprocess
+    """Install printer deps where this process can import them.
+
+    The interpreter running the app is tried first. Installing into some other
+    venv leaves the import failing no matter how well pip reports it went.
+    """
     import sys
 
     packages = [
@@ -337,69 +383,68 @@ def ensure_printer_packages():
         "qrcode",
     ]
 
+    running = sys.executable
+    candidates = [running] if running else []
     venv_python, searched = _find_project_venv_python()
+    if venv_python and venv_python not in candidates:
+        candidates.append(venv_python)
+
+    failures = []
+    installed_into = ""
+    for python_path in candidates:
+        ok, out = _pip_install(python_path, packages)
+        if ok:
+            installed_into = python_path
+            break
+        if "externally-managed-environment" in out:
+            failures.append(f"{python_path}: externally-managed-environment")
+        else:
+            failures.append(f"{python_path}: {out[-300:]}")
+
     created_note = ""
-    if not venv_python:
-        # Create /home/jdrevnyak/venv when missing (this device layout)
-        venv_python, created_note = _ensure_home_venv()
-        if not venv_python:
+    if not installed_into:
+        # Last resort on a Pi with no usable venv yet.
+        home_python, created_note = _ensure_home_venv()
+        if not home_python:
             searched_txt = "\n".join(f"  - {p}" for p in searched[:12])
             return (
                 False,
-                "No usable venv found and could not create /home/jdrevnyak/venv.\n"
-                f"Create error: {created_note}\n"
+                "Could not install printer packages.\n"
+                + "\n".join(failures)
+                + f"\nCreate venv error: {created_note}\n"
                 f"Searched:\n{searched_txt}\n"
-                f"Running python: {sys.executable}",
+                f"Running python: {running}",
             )
-
-    try:
-        subprocess.run(
-            [venv_python, "-m", "pip", "install", "--upgrade", "pip"],
-            capture_output=True, text=True, timeout=180,
-        )
-    except Exception:
-        pass
-
-    cmd = [venv_python, "-m", "pip", "install", *packages]
-    print(f"[PRINTER] Installing with {venv_python}: {' '.join(packages)}")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    except PermissionError as e:
-        print(f"[PRINTER] Permission denied on {venv_python}; recreating home venv")
-        venv_python, created_note = _ensure_home_venv()
-        if not venv_python:
-            return False, f"Permission denied and recreate failed: {e}"
-        try:
-            result = subprocess.run(
-                [venv_python, "-m", "pip", "install", *packages],
-                capture_output=True, text=True, timeout=300,
-            )
-        except Exception as e2:
-            return False, f"pip failed after recreate ({venv_python}): {e2}"
-    except Exception as e:
-        return False, f"pip failed to start ({venv_python}): {e}"
-
-    out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-    if result.returncode != 0:
-        if "externally-managed-environment" in out:
+        ok, out = _pip_install(home_python, packages)
+        if not ok:
             return (
                 False,
-                "pip refused install (externally-managed-environment).\n"
-                f"Tried: {venv_python}\n{out[-400:]}",
+                "Could not install printer packages.\n"
+                + "\n".join(failures + [f"{home_python}: {out[-300:]}"]),
             )
-        return False, f"pip via {venv_python} failed:\n{(out[-800:] if out else result.returncode)}"
+        installed_into = home_python
 
-    _add_venv_site_packages(venv_python)
-    ok = reload_printer_backends()
     prefix = (created_note + "\n") if created_note else ""
-    if not ok:
+
+    if installed_into != running:
+        if not _add_venv_site_packages(installed_into):
+            return (
+                False,
+                prefix
+                + f"Installed into {installed_into}, but the app runs {running} "
+                f"(Python {sys.version_info.major}.{sys.version_info.minor}) and "
+                "cannot import from there.\nStart the app with that interpreter, "
+                "or reinstall with the app's own venv.",
+            )
+
+    if not reload_printer_backends():
         return (
             False,
             prefix
-            + f"Packages installed into {venv_python} but python-escpos still cannot be imported. "
-            "Quit and reopen the app.",
+            + f"Packages installed into {installed_into} but python-escpos still "
+            "cannot be imported. Quit and reopen the app.",
         )
-    return True, prefix + f"Installed python-escpos into {venv_python}"
+    return True, prefix + f"Installed python-escpos into {installed_into}"
 
 def _usb_device_label(dev):
     vid = int(dev.idVendor)
