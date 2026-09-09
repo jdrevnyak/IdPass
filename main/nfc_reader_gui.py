@@ -733,6 +733,17 @@ class NFCReaderGUI(QMainWindow):
             )
             return
 
+        if not is_on_break:
+            try:
+                bathroom_busy = any(
+                    o.get("type") == "Bathroom" for o in (self.db.get_active_outings() or [])
+                )
+            except Exception:
+                bathroom_busy = False
+            if bathroom_busy:
+                self.show_error_message("Someone is already in the bathroom.")
+                return
+
         if is_on_break:
             success, message = self.db.end_bathroom_break(identifier)
             if success:
@@ -1164,13 +1175,13 @@ class NFCReaderGUI(QMainWindow):
         """Flip destination tiles to their 'End …' state while a visit is active."""
         outings = outings or []
         active_types = {o.get("type") for o in outings}
-        someone_out = bool(outings)
         for destination, tile in self.destination_tiles.items():
             tile.set_active(destination in active_types)
-            # Only one student may leave for bathroom/water. Keep the active
-            # tile enabled so that visit can still be ended.
+            # Water is never locked by another outing. Bathroom stays tappable
+            # so the student who is out can end it; a second bathroom start is
+            # blocked in process_bathroom_entry / the NFC picker.
             if destination in ("Bathroom", "Water"):
-                tile.setEnabled((not someone_out) or destination in active_types)
+                tile.setEnabled(True)
 
         count = len(outings)
         if count:

@@ -2216,7 +2216,7 @@ class BathroomOverlay(VisitOverlay):
     END_TITLE = "End Bathroom Break"
     DESTINATION_LABEL = "Bathroom"
     VISIT_TYPE = "Bathroom"
-    ACCENT_COLOR = "#12a3dd"
+    ACCENT_COLOR = "#2fc0ad"
     ENTRY_METHOD = "process_bathroom_entry"
 
 
@@ -2234,7 +2234,7 @@ class WaterOverlay(VisitOverlay):
     END_TITLE = "End Water Visit"
     DESTINATION_LABEL = "Water"
     VISIT_TYPE = "Water"
-    ACCENT_COLOR = "#2fc0ad"
+    ACCENT_COLOR = "#12a3dd"
     ENTRY_METHOD = "process_water_entry"
 
 
@@ -2831,9 +2831,9 @@ class BreakTypePickerOverlay(QWidget):
         vbox.addSpacing(8)
 
         btn_data = [
-            ("Bathroom", "#12a3dd", "#0b83c6"),
+            ("Bathroom", "#2fc0ad", "#16a394"),
             ("Nurse", "#f0455f", "#d92c50"),
-            ("Water", "#2fc0ad", "#16a394"),
+            ("Water", "#12a3dd", "#0b83c6"),
             ("Guidance", "#a24df0", "#7b3fe4"),
         ]
         self._type_buttons = {}
@@ -2905,17 +2905,19 @@ class BreakTypePickerOverlay(QWidget):
                     btn.setVisible(False)
         else:
             self.subtitle.setText("Where are you going?")
-            someone_out = False
+            bathroom_busy = False
             db = getattr(self.parent, "db", None)
             if db:
                 try:
-                    someone_out = bool(db.get_active_outings())
+                    bathroom_busy = any(
+                        o.get("type") == "Bathroom" for o in (db.get_active_outings() or [])
+                    )
                 except Exception:
-                    someone_out = False
+                    bathroom_busy = False
             for visit_type, btn in self._type_buttons.items():
                 btn.setText(visit_type)
                 btn.setVisible(True)
-                locked = someone_out and visit_type in ("Bathroom", "Water")
+                locked = visit_type == "Bathroom" and bathroom_busy
                 btn.setEnabled(not locked)
         if self.parent:
             self.setGeometry(self.parent.rect())

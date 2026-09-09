@@ -29,9 +29,9 @@ THEME = {
 
 # Per-destination gradients (top, bottom) plus the glyph drawn on the tile.
 DESTINATION_STYLES = {
-    "Bathroom": {"glyph": "bathroom", "gradient": ("#12a3dd", "#0b83c6")},
+    "Bathroom": {"glyph": "bathroom", "gradient": ("#2fc0ad", "#16a394")},
     "Nurse": {"glyph": "plus", "gradient": ("#f0455f", "#d92c50")},
-    "Water": {"glyph": "droplet", "gradient": ("#2fc0ad", "#16a394")},
+    "Water": {"glyph": "droplet", "gradient": ("#12a3dd", "#0b83c6")},
     "Guidance": {"glyph": "computer", "gradient": ("#a24df0", "#7b3fe4")},
 }
 
@@ -98,10 +98,15 @@ def draw_glyph(painter, name, size, color, stroke=2.0):
         painter.drawLine(QPointF(4.5, 12), QPointF(19.5, 12))
         painter.drawLine(QPointF(12, 4.5), QPointF(12, 19.5))
     elif name == "droplet":
+        # Classic raindrop: sharp tip, circular belly.
         drop = QPainterPath()
-        drop.moveTo(12, 3.2)
-        drop.cubicTo(18.8, 10.2, 19.2, 16.2, 12, 21.0)
-        drop.cubicTo(4.8, 16.2, 5.2, 10.2, 12, 3.2)
+        drop.moveTo(12, 2.2)
+        drop.cubicTo(12.4, 8.0, 20.4, 11.8, 20.2, 16.6)
+        drop.cubicTo(20.2, 21.0, 16.6, 23.2, 12, 23.2)
+        drop.cubicTo(7.4, 23.2, 3.8, 21.0, 3.8, 16.6)
+        drop.cubicTo(3.6, 11.8, 11.6, 8.0, 12, 2.2)
+        painter.setBrush(QBrush(QColor(color)))
+        painter.setPen(QPen(QColor(color), stroke * 0.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.drawPath(drop)
     elif name == "computer":
         painter.drawRoundedRect(QRectF(3.2, 3.4, 17.6, 12.2), 1.6, 1.6)
@@ -336,7 +341,7 @@ class HomeScreen(QWidget):
     _BODY_MARGINS = (10, 8, 10, 8)
     _CARD_PAD = 12
     _GAP = 10
-    _STATUS_H = 44
+    _STATUS_H = 52
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -408,7 +413,7 @@ class HomeScreen(QWidget):
         self.prompt = QLabel("Select your hall pass destination")
         self.prompt.setAlignment(Qt.AlignCenter)
         self.prompt.setWordWrap(False)
-        self.prompt.setFont(QFont("Arial", 13))
+        self.prompt.setFont(QFont("Arial", 18, QFont.Bold))
         self.prompt.setFixedHeight(self._STATUS_H)
         self.prompt.setCursor(Qt.PointingHandCursor)
         self.prompt.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
