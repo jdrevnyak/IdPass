@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy)
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 # GPIO imports for Raspberry Pi LED control
@@ -41,7 +41,10 @@ from student_db import normalize_nfc_uid, normalize_student_id_key, PERIODS
 
 class NFCReaderGUI(QMainWindow):
     """Main application window for the NFC Reader hall-pass system."""
-    
+
+    # Printing runs on a worker thread; this carries failures back to the GUI thread.
+    printer_failed = pyqtSignal(str)
+
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
@@ -222,6 +225,7 @@ class NFCReaderGUI(QMainWindow):
         # Current student ID
         self.current_student_id = None
         self._recent_visit_actions = {}
+        self.printer_failed.connect(self.show_error_message)
 
         # Auto-end breaks during passing periods
         self._last_period = None
@@ -798,13 +802,18 @@ class NFCReaderGUI(QMainWindow):
         else:
             success, message = self.db.start_bathroom_break(identifier)
             if success:
-                self.show_prompt_message("Bathroom break started!")
+                ended_existing_break = "previous break ended" in str(message).lower()
+                if ended_existing_break:
+                    self.show_prompt_message("Bathroom break ended!")
+                else:
+                    self.show_prompt_message("Bathroom break started!")
                 self.update_gpio_led_status()  # Immediately update GPIO LED
                 QTimer.singleShot(3000, self.bathroom_overlay.hide)
-                print_name = student_name_db
-                print_id = student_id_db if nfc_uid else student_id
-                print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self._print_pass_async(print_name, print_id, "BATHROOM PASS", print_location)
+                if not ended_existing_break:
+                    print_name = student_name_db
+                    print_id = student_id_db if nfc_uid else student_id
+                    print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
+                    self._print_pass_async(print_name, print_id, "BATHROOM PASS", print_location)
             else:
                 self.show_error_message(message)
 
@@ -816,14 +825,19 @@ class NFCReaderGUI(QMainWindow):
 
         def work():
             try:
-                printer.print_pass(
+                printed = printer.print_pass(
                     student_name,
                     student_id,
                     pass_type=pass_type,
                     location=location,
                 )
+                if not printed:
+                    reason = getattr(printer, "last_error", "") or "printer not responding"
+                    print(f"[PRINTER] Pass was not printed: {reason}")
+                    self.printer_failed.emit(f"Pass did not print: {reason}")
             except Exception as e:
                 print(f"[PRINTER] Background print failed: {e}")
+                self.printer_failed.emit(f"Pass did not print: {e}")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -863,7 +877,8 @@ class NFCReaderGUI(QMainWindow):
                 self.show_error_message("No student found with that card.")
                 return
             student_id_db, student_name_db = result
-            identifier = nfc_uid if nfc_uid else student_id_db
+            identifier = normalize_nfc_uid(nfc_uid)
+            visit_kwargs = {"nfc_uid": identifier}
         elif student_id:
             student_id = normalize_student_id_key(student_id)
             if not student_id:
@@ -874,7 +889,12 @@ class NFCReaderGUI(QMainWindow):
                 self.show_error_message("No student found with that ID.")
                 return
             nfc_uid_db, student_name_db = result
-            identifier = nfc_uid_db if nfc_uid_db else student_id
+            if nfc_uid_db:
+                identifier = normalize_nfc_uid(nfc_uid_db)
+                visit_kwargs = {"nfc_uid": identifier}
+            else:
+                identifier = student_id
+                visit_kwargs = {"student_id": identifier}
         else:
             self.show_error_message("No student information provided.")
             return
@@ -885,8 +905,8 @@ class NFCReaderGUI(QMainWindow):
         print(f"[DEBUG] Nurse entry using identifier: {identifier}")
         is_on_nurse_visit = self.db.is_at_nurse(identifier)
         if is_on_nurse_visit:
-            # Pass the correct parameters to end_nurse_visit
-            success, message = self.db.end_nurse_visit(nfc_uid=nfc_uid, student_id=student_id)
+            # Start and end must key off the same identifier the check used.
+            success, message = self.db.end_nurse_visit(**visit_kwargs)
             if success:
                 self.show_prompt_message("Nurse visit ended!")
                 self.update_gpio_led_status()  # Immediately update GPIO LED
@@ -894,7 +914,7 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.show_error_message(message)
         else:
-            success, message = self.db.start_nurse_visit(nfc_uid=nfc_uid, student_id=student_id)
+            success, message = self.db.start_nurse_visit(**visit_kwargs)
             if success:
                 ended_existing_visit = "previous nurse visit ended" in str(message).lower()
                 if ended_existing_visit:
@@ -927,7 +947,8 @@ class NFCReaderGUI(QMainWindow):
                 self.show_error_message("No student found with that card.")
                 return
             student_id_db, student_name_db = result
-            identifier = nfc_uid if nfc_uid else student_id_db
+            identifier = normalize_nfc_uid(nfc_uid)
+            visit_kwargs = {"nfc_uid": identifier}
         elif student_id:
             student_id = normalize_student_id_key(student_id)
             if not student_id:
@@ -938,7 +959,12 @@ class NFCReaderGUI(QMainWindow):
                 self.show_error_message("No student found with that ID.")
                 return
             nfc_uid_db, student_name_db = result
-            identifier = nfc_uid_db if nfc_uid_db else student_id
+            if nfc_uid_db:
+                identifier = normalize_nfc_uid(nfc_uid_db)
+                visit_kwargs = {"nfc_uid": identifier}
+            else:
+                identifier = student_id
+                visit_kwargs = {"student_id": identifier}
         else:
             self.show_error_message("No student information provided.")
             return
@@ -949,8 +975,8 @@ class NFCReaderGUI(QMainWindow):
         print(f"[DEBUG] Water entry using identifier: {identifier}")
         is_at_water = self.db.is_at_water(identifier)
         if is_at_water:
-            # Pass the correct parameters to end_water_visit
-            success, message = self.db.end_water_visit(nfc_uid=nfc_uid, student_id=student_id)
+            # Start and end must key off the same identifier the check used.
+            success, message = self.db.end_water_visit(**visit_kwargs)
             if success:
                 self.show_prompt_message("Water visit ended!")
                 self.update_gpio_led_status()  # Immediately update GPIO LED
@@ -958,19 +984,24 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.show_error_message(message)
         else:
-            success, message = self.db.start_water_visit(nfc_uid=nfc_uid, student_id=student_id)
+            success, message = self.db.start_water_visit(**visit_kwargs)
             if success:
-                self.show_prompt_message("Water visit started!")
+                ended_existing_visit = "previous water visit ended" in str(message).lower()
+                if ended_existing_visit:
+                    self.show_prompt_message("Water visit ended!")
+                else:
+                    self.show_prompt_message("Water visit started!")
                 self.update_gpio_led_status()  # Immediately update GPIO LED
                 QTimer.singleShot(3000, self.water_overlay.hide)
-                
-                # Use the retrieved name and correct student ID
-                print_name = student_name_db
-                print_id = student_id_db if nfc_uid else student_id
 
-                # Print the pass
-                print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self._print_pass_async(print_name, print_id, "WATER PASS", print_location)
+                if not ended_existing_visit:
+                    # Use the retrieved name and correct student ID
+                    print_name = student_name_db
+                    print_id = student_id_db if nfc_uid else student_id
+
+                    # Print only when a new visit was actually started.
+                    print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
+                    self._print_pass_async(print_name, print_id, "WATER PASS", print_location)
             else:
                 self.show_error_message(message)
 

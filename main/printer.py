@@ -861,6 +861,33 @@ class ThermalPrinter:
     def is_connected(self):
         return self.printer is not None
 
+    def _prepare_for_job(self):
+        """Confirm the handle is alive before sending a job, reconnecting once if not.
+
+        A handle left over from an earlier print can accept the open but fail on the
+        first write. Probing with an initialize command (which prints nothing) keeps
+        that failure out of the job itself, so a job is never sent twice.
+        """
+        for attempt in range(2):
+            if not self.is_connected():
+                self._connect()
+                if not self.is_connected():
+                    return False
+            try:
+                if self.backend_kind == "serial":
+                    self.printer._raw(b"\xff")
+                    time.sleep(0.05)
+                self.printer._raw(b"\x1b@")
+                self.last_error = ""
+                return True
+            except Exception as e:
+                self.last_error = f"{type(e).__name__}: {e}"
+                print(
+                    f"[PRINTER] Printer did not respond, attempt {attempt + 1}/2: {e}"
+                )
+                self._disconnect()
+        return False
+
     def print_pass(
         self,
         student_name,
@@ -868,7 +895,6 @@ class ThermalPrinter:
         pass_type="HALL PASS",
         location=None,
         timestamp=None,
-        _allow_retry=True,
     ):
         """
         Print a hall pass with QR code.
@@ -878,19 +904,13 @@ class ThermalPrinter:
 
         print(f"[PRINTER] Printing {pass_type} for {student_name} ({student_id})")
 
-        if not self.is_connected():
-            self._connect()
-            if not self.is_connected():
-                print("[PRINTER] Printer not available, skipping print.")
-                return False
+        if not self._prepare_for_job():
+            print(f"[PRINTER] Printer not available, skipping print. {self.last_error}")
+            return False
 
-        output_started = False
         try:
             self.printer.set(align='center')
             self.printer.text("\n")
-            # From this point onward the printer may have physically printed
-            # pass content even if a later USB operation reports a timeout.
-            output_started = True
             self.printer.set(align='center', bold=True, double_width=True, double_height=True)
             self.printer.text(f"{pass_type.upper()}\n")
             self.printer.set(align='center', bold=False, double_width=False, double_height=False)
@@ -933,26 +953,15 @@ class ThermalPrinter:
                 "location": location,
                 "timestamp": timestamp,
             }
+            self.last_error = ""
             return True
 
         except Exception as e:
             print(f"[PRINTER] Print error: {e}")
             self.last_error = f"{type(e).__name__}: {e}"
+            # The printer can put paper out and still report a timeout, so the job
+            # is never resent here. The next pass reconnects through the probe.
             self._disconnect()
-            # Retry only if failure occurred before pass output began. USB
-            # printers can print all bytes and then report a timeout, so replaying
-            # a partially or fully sent job would produce a duplicate pass.
-            if _allow_retry and not output_started:
-                self._connect()
-                if self.is_connected():
-                    return self.print_pass(
-                        student_name,
-                        student_id,
-                        pass_type=pass_type,
-                        location=location,
-                        timestamp=timestamp,
-                        _allow_retry=False,
-                    )
             return False
 
     def reprint_last_pass(self):
