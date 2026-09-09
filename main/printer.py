@@ -868,6 +868,7 @@ class ThermalPrinter:
         pass_type="HALL PASS",
         location=None,
         timestamp=None,
+        _allow_retry=True,
     ):
         """
         Print a hall pass with QR code.
@@ -883,9 +884,13 @@ class ThermalPrinter:
                 print("[PRINTER] Printer not available, skipping print.")
                 return False
 
+        output_started = False
         try:
             self.printer.set(align='center')
             self.printer.text("\n")
+            # From this point onward the printer may have physically printed
+            # pass content even if a later USB operation reports a timeout.
+            output_started = True
             self.printer.set(align='center', bold=True, double_width=True, double_height=True)
             self.printer.text(f"{pass_type.upper()}\n")
             self.printer.set(align='center', bold=False, double_width=False, double_height=False)
@@ -934,9 +939,20 @@ class ThermalPrinter:
             print(f"[PRINTER] Print error: {e}")
             self.last_error = f"{type(e).__name__}: {e}"
             self._disconnect()
-            # Do not retry the complete job here. USB printers can receive and
-            # print all bytes before reporting a timeout; replaying the job then
-            # produces a duplicate pass. The next print will reconnect normally.
+            # Retry only if failure occurred before pass output began. USB
+            # printers can print all bytes and then report a timeout, so replaying
+            # a partially or fully sent job would produce a duplicate pass.
+            if _allow_retry and not output_started:
+                self._connect()
+                if self.is_connected():
+                    return self.print_pass(
+                        student_name,
+                        student_id,
+                        pass_type=pass_type,
+                        location=location,
+                        timestamp=timestamp,
+                        _allow_retry=False,
+                    )
             return False
 
     def reprint_last_pass(self):

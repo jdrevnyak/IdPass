@@ -896,17 +896,22 @@ class NFCReaderGUI(QMainWindow):
         else:
             success, message = self.db.start_nurse_visit(nfc_uid=nfc_uid, student_id=student_id)
             if success:
-                self.show_prompt_message("Nurse visit started!")
+                ended_existing_visit = "previous nurse visit ended" in str(message).lower()
+                if ended_existing_visit:
+                    self.show_prompt_message("Nurse visit ended!")
+                else:
+                    self.show_prompt_message("Nurse visit started!")
                 self.update_gpio_led_status()  # Immediately update GPIO LED
                 QTimer.singleShot(3000, self.nurse_overlay.hide)
-                
-                # Use the retrieved name and correct student ID
-                print_name = student_name_db
-                print_id = student_id_db if nfc_uid else student_id
 
-                # Print the pass
-                print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                self._print_pass_async(print_name, print_id, "NURSE PASS", print_location)
+                if not ended_existing_visit:
+                    # Use the retrieved name and correct student ID
+                    print_name = student_name_db
+                    print_id = student_id_db if nfc_uid else student_id
+
+                    # Print only when a new visit was actually started.
+                    print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
+                    self._print_pass_async(print_name, print_id, "NURSE PASS", print_location)
 
             else:
                 self.show_error_message(message)
