@@ -868,7 +868,6 @@ class ThermalPrinter:
         pass_type="HALL PASS",
         location=None,
         timestamp=None,
-        _allow_retry=True,
     ):
         """
         Print a hall pass with QR code.
@@ -933,18 +932,11 @@ class ThermalPrinter:
 
         except Exception as e:
             print(f"[PRINTER] Print error: {e}")
+            self.last_error = f"{type(e).__name__}: {e}"
             self._disconnect()
-            if _allow_retry:
-                self._connect()
-                if self.is_connected():
-                    return self.print_pass(
-                        student_name,
-                        student_id,
-                        pass_type=pass_type,
-                        location=location,
-                        timestamp=timestamp,
-                        _allow_retry=False,
-                    )
+            # Do not retry the complete job here. USB printers can receive and
+            # print all bytes before reporting a timeout; replaying the job then
+            # produces a duplicate pass. The next print will reconnect normally.
             return False
 
     def reprint_last_pass(self):

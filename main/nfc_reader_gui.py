@@ -48,6 +48,7 @@ class NFCReaderGUI(QMainWindow):
     _MIN_PRESS_DURATION_S = 0.1  # 100ms ghost-touch filter threshold
     _INFO_MESSAGE_MS = 3500
     _ERROR_MESSAGE_MS = 7000
+    _VISIT_ACTION_COOLDOWN_S = 4
     # Derived from the canonical PERIODS list in student_db.py (single source of truth).
     # Overridden at runtime by periods loaded from Firebase when available.
     DEFAULT_SCHEDULE = [
@@ -220,6 +221,7 @@ class NFCReaderGUI(QMainWindow):
         
         # Current student ID
         self.current_student_id = None
+        self._recent_visit_actions = {}
 
         # Auto-end breaks during passing periods
         self._last_period = None
@@ -771,6 +773,9 @@ class NFCReaderGUI(QMainWindow):
             self.show_error_message("No student information provided.")
             return
 
+        if self._is_repeated_visit_action("Bathroom", identifier):
+            return
+
         print(f"[DEBUG] Bathroom entry using identifier: {identifier}")
         is_on_break = self.db.is_on_break(identifier)
 
@@ -822,6 +827,31 @@ class NFCReaderGUI(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _is_repeated_visit_action(self, visit_type, identifier):
+        """Ignore duplicate card reads/button submissions that would toggle a visit twice."""
+        now = datetime.now()
+        key = (str(visit_type), str(identifier))
+        previous = self._recent_visit_actions.get(key)
+        self._recent_visit_actions[key] = now
+
+        cutoff = now - timedelta(seconds=self._VISIT_ACTION_COOLDOWN_S * 2)
+        self._recent_visit_actions = {
+            action: timestamp
+            for action, timestamp in self._recent_visit_actions.items()
+            if timestamp >= cutoff
+        }
+
+        if previous is None:
+            return False
+        if (now - previous).total_seconds() >= self._VISIT_ACTION_COOLDOWN_S:
+            return False
+
+        print(
+            f"[VISIT] Ignoring repeated {visit_type} action for {identifier} "
+            f"within {self._VISIT_ACTION_COOLDOWN_S}s"
+        )
+        return True
+
     def process_nurse_entry(self, student_id=None, nfc_uid=None):
         """Process nurse visit entry/exit"""
         # Unified logic: use nfc_uid if available, else use student_id
@@ -847,6 +877,9 @@ class NFCReaderGUI(QMainWindow):
             identifier = nfc_uid_db if nfc_uid_db else student_id
         else:
             self.show_error_message("No student information provided.")
+            return
+
+        if self._is_repeated_visit_action("Nurse", identifier):
             return
 
         print(f"[DEBUG] Nurse entry using identifier: {identifier}")
@@ -903,6 +936,9 @@ class NFCReaderGUI(QMainWindow):
             identifier = nfc_uid_db if nfc_uid_db else student_id
         else:
             self.show_error_message("No student information provided.")
+            return
+
+        if self._is_repeated_visit_action("Water", identifier):
             return
 
         print(f"[DEBUG] Water entry using identifier: {identifier}")
