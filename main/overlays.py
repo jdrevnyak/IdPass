@@ -64,11 +64,11 @@ class _BackspaceButton(QPushButton):
 
 
 def _keypad_card_size(host):
-    """Size the ID modal so CREATE PASS / Cancel stay on an 800x480 panel."""
+    """Wide landscape card: keypad on the left, actions on the right."""
     avail_w = host.width() if host is not None else 800
     avail_h = host.height() if host is not None else 480
-    width = min(320, max(260, avail_w - 16))
-    height = min(468, max(360, avail_h - 8))
+    width = min(740, max(520, avail_w - 24))
+    height = min(400, max(300, avail_h - 24))
     return width, height
 
 
@@ -83,29 +83,29 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
     card.setStyleSheet("background: #ffffff; border-radius: 18px;")
     _size_id_keypad_card(card, parent)
     vbox = QVBoxLayout(card)
-    vbox.setContentsMargins(12, 8, 12, 6)
-    vbox.setSpacing(5)
+    vbox.setContentsMargins(16, 12, 16, 12)
+    vbox.setSpacing(8)
 
     title = QLabel("Enter Student ID #")
     title.setAlignment(Qt.AlignCenter)
-    title.setFont(QFont("Arial", 16, QFont.Bold))
+    title.setFont(QFont("Arial", 18, QFont.Bold))
     title.setStyleSheet("color: #1e293b;")
     vbox.addWidget(title)
 
     destination_label = QLabel(f"Destination: {destination}" if destination else "")
     destination_label.setAlignment(Qt.AlignCenter)
-    destination_label.setFont(QFont("Arial", 11))
+    destination_label.setFont(QFont("Arial", 12))
     destination_label.setStyleSheet("color: #64748b;")
     destination_label.setVisible(bool(destination))
     vbox.addWidget(destination_label)
 
     display = QLabel(_id_display_text(""))
     display.setAlignment(Qt.AlignCenter)
-    display.setFont(QFont("Arial", 20, QFont.Bold))
-    display.setFixedHeight(36)
+    display.setFont(QFont("Arial", 22, QFont.Bold))
+    display.setFixedHeight(40)
     display.setStyleSheet(
         "background: #f1f5f9; color: #1e293b; border: 1px solid #cbd5e1; "
-        "border-radius: 10px; letter-spacing: 3px;"
+        "border-radius: 10px; letter-spacing: 4px;"
     )
     vbox.addWidget(display)
 
@@ -128,57 +128,71 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
         digits["value"] = digits["value"][:-1]
         _refresh()
 
+    body = QHBoxLayout()
+    body.setSpacing(12)
+
     grid = QGridLayout()
-    grid.setSpacing(6)
+    grid.setSpacing(8)
     for i, digit in enumerate("123456789"):
         btn = QPushButton(digit)
-        btn.setMinimumSize(72, 36)
+        btn.setMinimumSize(70, 42)
         btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        btn.setFont(QFont("Arial", 16, QFont.Bold))
+        btn.setFont(QFont("Arial", 18, QFont.Bold))
         btn.setStyleSheet(_DIGIT_STYLE)
         btn.clicked.connect(lambda _, d=digit: _append(d))
         grid.addWidget(btn, i // 3, i % 3)
 
     clear_btn = QPushButton("CLEAR")
-    clear_btn.setMinimumSize(72, 36)
+    clear_btn.setMinimumSize(70, 42)
     clear_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    clear_btn.setFont(QFont("Arial", 11, QFont.Bold))
+    clear_btn.setFont(QFont("Arial", 12, QFont.Bold))
     clear_btn.setStyleSheet(_RED_STYLE)
     clear_btn.clicked.connect(_clear)
     grid.addWidget(clear_btn, 3, 0)
 
     zero_btn = QPushButton("0")
-    zero_btn.setMinimumSize(72, 36)
+    zero_btn.setMinimumSize(70, 42)
     zero_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    zero_btn.setFont(QFont("Arial", 16, QFont.Bold))
+    zero_btn.setFont(QFont("Arial", 18, QFont.Bold))
     zero_btn.setStyleSheet(_DIGIT_STYLE)
     zero_btn.clicked.connect(lambda: _append("0"))
     grid.addWidget(zero_btn, 3, 1)
 
     back_btn = _BackspaceButton("")
-    back_btn.setMinimumSize(72, 36)
+    back_btn.setMinimumSize(70, 42)
     back_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     back_btn.setStyleSheet(_RED_STYLE)
     back_btn.clicked.connect(_backspace)
     grid.addWidget(back_btn, 3, 2)
-    vbox.addLayout(grid, 1)
+    body.addLayout(grid, 3)
 
-    submit_btn = QPushButton(submit_label)
-    submit_btn.setFixedHeight(40)
-    submit_btn.setFont(QFont("Arial", 14, QFont.Bold))
+    actions = QVBoxLayout()
+    actions.setSpacing(10)
+    submit_btn = QPushButton(submit_label.replace(" ", "\n"))
+    submit_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    submit_btn.setMinimumWidth(160)
+    submit_btn.setFont(QFont("Arial", 15, QFont.Bold))
     submit_btn.setStyleSheet(_GREEN_STYLE)
     if on_submit:
         submit_btn.clicked.connect(lambda: on_submit(digits["value"]))
-    vbox.addWidget(submit_btn)
+    actions.addWidget(submit_btn, 3)
 
     cancel_btn = QPushButton("Cancel")
-    cancel_btn.setFixedHeight(26)
-    cancel_btn.setFont(QFont("Arial", 12))
+    cancel_btn.setMinimumHeight(44)
+    cancel_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    cancel_btn.setFont(QFont("Arial", 14, QFont.Bold))
     cancel_btn.setCursor(Qt.PointingHandCursor)
-    cancel_btn.setStyleSheet(_CANCEL_STYLE)
+    cancel_btn.setStyleSheet(
+        "QPushButton { background: #e2e8f0; color: #334155; border: none; "
+        "border-radius: 14px; }"
+        "QPushButton:pressed { background: #cbd5e1; }"
+    )
     if on_cancel:
         cancel_btn.clicked.connect(on_cancel)
-    vbox.addWidget(cancel_btn)
+    actions.addWidget(cancel_btn, 1)
+    body.addLayout(actions, 1)
+
+    vbox.addLayout(body, 1)
 
     return card, {
         "card": card,
@@ -2154,10 +2168,10 @@ class VisitOverlay(QWidget):
         dest = self.DESTINATION_LABEL or self.VISIT_TYPE
         if ending:
             self.main_title.setText(self.END_TITLE)
-            self._keypad["submit_btn"].setText("END VISIT")
+            self._keypad["submit_btn"].setText("END\nVISIT")
         else:
             self.main_title.setText(f"Destination: {dest}" if dest else "")
-            self._keypad["submit_btn"].setText("CREATE PASS")
+            self._keypad["submit_btn"].setText("CREATE\nPASS")
         if self.parent:
             self.setGeometry(self.parent.rect())
         _size_id_keypad_card(self._card, self)

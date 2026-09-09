@@ -32,7 +32,7 @@ DESTINATION_STYLES = {
     "Bathroom": {"glyph": "bathroom", "gradient": ("#12a3dd", "#0b83c6")},
     "Nurse": {"glyph": "plus", "gradient": ("#f0455f", "#d92c50")},
     "Water": {"glyph": "droplet", "gradient": ("#2fc0ad", "#16a394")},
-    "Guidance": {"glyph": "compass", "gradient": ("#a24df0", "#7b3fe4")},
+    "Guidance": {"glyph": "computer", "gradient": ("#a24df0", "#7b3fe4")},
 }
 
 # Shown on a tile whose visit type is currently active.
@@ -81,16 +81,32 @@ def draw_glyph(painter, name, size, color, stroke=2.0):
         body.lineTo(18.5, 11.4)
         painter.drawPath(body)
     elif name == "bathroom":
-        painter.drawRoundedRect(QRectF(3, 5.5, 18, 13), 2.5, 2.5)
-        painter.drawLine(QPointF(9.5, 5.5), QPointF(9.5, 18.5))
-        painter.drawLine(QPointF(13.5, 9.5), QPointF(13.5, 14.5))
-        painter.drawLine(QPointF(17.3, 9.5), QPointF(17.3, 14.5))
+        # Standard restroom pictogram: head, torso, arms, legs.
+        painter.setBrush(QBrush(QColor(color)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(12, 5.2), 2.6, 2.6)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(QPointF(12, 8.2), QPointF(12, 14.6))
+        painter.drawLine(QPointF(6.5, 11.0), QPointF(17.5, 11.0))
+        painter.drawLine(QPointF(12, 14.6), QPointF(7.6, 21.0))
+        painter.drawLine(QPointF(12, 14.6), QPointF(16.4, 21.0))
     elif name == "plus":
         painter.setPen(QPen(QColor(color), stroke * 1.6, Qt.SolidLine, Qt.RoundCap))
         painter.drawLine(QPointF(4.5, 12), QPointF(19.5, 12))
         painter.drawLine(QPointF(12, 4.5), QPointF(12, 19.5))
     elif name == "droplet":
-        painter.drawEllipse(QPointF(12, 12), 7.5, 7.5)
+        drop = QPainterPath()
+        drop.moveTo(12, 3.2)
+        drop.cubicTo(18.8, 10.2, 19.2, 16.2, 12, 21.0)
+        drop.cubicTo(4.8, 16.2, 5.2, 10.2, 12, 3.2)
+        painter.drawPath(drop)
+    elif name == "computer":
+        painter.drawRoundedRect(QRectF(3.2, 3.4, 17.6, 12.2), 1.6, 1.6)
+        painter.drawLine(QPointF(10.2, 15.6), QPointF(10.2, 18.4))
+        painter.drawLine(QPointF(13.8, 15.6), QPointF(13.8, 18.4))
+        painter.drawLine(QPointF(7.4, 18.4), QPointF(16.6, 18.4))
+        painter.drawLine(QPointF(6.2, 20.4), QPointF(17.8, 20.4))
     elif name == "compass":
         painter.drawEllipse(QPointF(12, 12), 7.5, 7.5)
         painter.drawLine(QPointF(8.8, 15.2), QPointF(15.2, 8.8))
