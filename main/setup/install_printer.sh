@@ -74,22 +74,31 @@ if [ -z "$VENV_PY" ] && [ -n "$PROJECT_DIR" ]; then
     fi
 fi
 
+PRINTER_PKGS=("pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode")
+
+# Run as the desktop user so a user-site install lands in their home, not root's.
+run_as_user() {
+    if [ -n "$REAL_USER" ] && [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$REAL_USER" "$@"
+    else
+        "$@"
+    fi
+}
+
 if [ -z "$VENV_PY" ]; then
     echo "No app interpreter or project venv found; skipping Python package install."
 else
-    echo "Installing printer packages with $VENV_PY -m pip (not system pip) ..."
-    if [ -n "$REAL_USER" ] && [ "$(id -u)" -eq 0 ]; then
-        sudo -u "$REAL_USER" "$VENV_PY" -m pip install \
-            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
-            || echo "Warning: could not install printer packages; continuing with udev setup."
-        echo "python-escpos check:"
-        sudo -u "$REAL_USER" "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
-            || echo "Warning: escpos import failed after install."
-    else
-        "$VENV_PY" -m pip install \
-            "pyusb>=1.2.1" "pyserial>=3.5" "python-escpos==3.0a9" "Pillow" "qrcode" \
+    echo "Installing printer packages with $VENV_PY -m pip ..."
+    if ! run_as_user "$VENV_PY" -m pip install "${PRINTER_PKGS[@]}"; then
+        # Raspberry Pi OS marks the system interpreter as owned by apt. A user-site
+        # install stays importable from it without touching anything apt manages.
+        echo "Retrying as a user-site install (system Python is apt-managed) ..."
+        run_as_user "$VENV_PY" -m pip install --user --break-system-packages "${PRINTER_PKGS[@]}" \
             || echo "Warning: could not install printer packages; continuing with udev setup."
     fi
+    echo "python-escpos check:"
+    run_as_user "$VENV_PY" -c "import escpos; print('escpos OK', escpos.__file__)" \
+        || echo "Warning: escpos import failed after install."
 fi
 
 # The app needs lp/plugdev for USB and dialout for serial/TTL UARTs.

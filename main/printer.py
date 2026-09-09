@@ -97,6 +97,8 @@ def reload_printer_backends():
 
     try:
         import importlib
+        # pip may have created directories after this process computed sys.path.
+        importlib.invalidate_caches()
         import escpos.printer as escpos_printer
         importlib.reload(escpos_printer)
         EscposSerial = escpos_printer.Serial
@@ -340,31 +342,56 @@ def _add_venv_site_packages(venv_python):
     return added
 
 
+def _add_user_site_packages():
+    """Pick up ~/.local/lib/pythonX.Y/site-packages when pip just created it.
+
+    Python only puts the user site directory on sys.path at startup if it already
+    exists, so a first-time install is invisible until it is added by hand.
+    """
+    import site
+    import sys
+
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        return False
+
+    dirs = list(user_site) if isinstance(user_site, (list, tuple)) else [user_site]
+    added = False
+    for directory in dirs:
+        if directory and os.path.isdir(directory) and directory not in sys.path:
+            sys.path.insert(0, directory)
+            print(f"[PRINTER] Added to sys.path: {directory}")
+            added = True
+    return added
+
+
 def _pip_install(python_path, packages):
     """Install packages with one interpreter. Returns (ok, combined_output)."""
     import subprocess
 
-    try:
-        subprocess.run(
-            [python_path, "-m", "pip", "install", "--upgrade", "pip"],
-            capture_output=True, text=True, timeout=180,
-        )
-    except Exception:
-        pass
+    def run(extra_args):
+        cmd = [python_path, "-m", "pip", "install", *extra_args, *packages]
+        print(f"[PRINTER] {' '.join(cmd)}")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except Exception as e:
+            return None, f"pip failed to start ({python_path}): {e}"
+        return result.returncode, ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
 
-    print(f"[PRINTER] Installing with {python_path}: {' '.join(packages)}")
-    try:
-        result = subprocess.run(
-            [python_path, "-m", "pip", "install", *packages],
-            capture_output=True, text=True, timeout=300,
-        )
-    except Exception as e:
-        return False, f"pip failed to start ({python_path}): {e}"
+    code, out = run([])
+    if code == 0:
+        return True, out
 
-    out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-    if result.returncode != 0:
-        return False, out or f"pip exited {result.returncode}"
-    return True, out
+    if code is not None and "externally-managed-environment" in out:
+        # Raspberry Pi OS marks the system interpreter as owned by apt. Installing
+        # into the user site keeps the packages importable from that interpreter
+        # without writing anything apt manages.
+        code, out = run(["--user", "--break-system-packages"])
+        if code == 0:
+            return True, out
+
+    return False, out or f"pip exited {code}"
 
 
 def ensure_printer_packages():
@@ -424,9 +451,20 @@ def ensure_printer_packages():
             )
         installed_into = home_python
 
+    # The launcher activates the project venv, but the app is sometimes started
+    # with the system interpreter instead. A venv does not read the user site, so
+    # cover the other interpreter too rather than depend on how it was started.
+    also_installed = ""
+    other = venv_python if installed_into == running else running
+    if other and other != installed_into:
+        ok, _out = _pip_install(other, packages)
+        also_installed = f"\nAlso installed into {other}" if ok else ""
+
     prefix = (created_note + "\n") if created_note else ""
 
-    if installed_into != running:
+    if installed_into == running:
+        _add_user_site_packages()
+    else:
         if not _add_venv_site_packages(installed_into):
             return (
                 False,
@@ -444,7 +482,7 @@ def ensure_printer_packages():
             + f"Packages installed into {installed_into} but python-escpos still "
             "cannot be imported. Quit and reopen the app.",
         )
-    return True, prefix + f"Installed python-escpos into {installed_into}"
+    return True, prefix + f"Installed python-escpos into {installed_into}" + also_installed
 
 def _usb_device_label(dev):
     vid = int(dev.idVendor)
