@@ -619,6 +619,65 @@ class OnlineFirstDatabase:
         self._cache.pop("active_outings", None)
         self._cache.pop("has_students_out", None)
 
+    def _note_outing_started(self, outing_type, student_uid, student_name=None):
+        """Optimistically update the in-memory outing list right after a local write.
+
+        Firebase on_snapshot can take a few seconds; LEDs and button lockouts must
+        not wait for that round-trip."""
+        uid = student_uid or ""
+        with self._outing_snapshot_lock:
+            self._outing_snapshot = [
+                o for o in self._outing_snapshot
+                if not (o.get("type") == outing_type and (o.get("student_uid") or "") == uid)
+            ]
+            self._outing_snapshot.append({
+                "type": outing_type,
+                "student_name": student_name or "Student",
+                "student_uid": uid,
+                "start": datetime.now(),
+            })
+            self._outing_snapshot.sort(key=lambda o: o["start"])
+            outings = list(self._outing_snapshot)
+        now = time.monotonic()
+        self._cache["active_outings"] = (now, outings)
+        self._cache["has_students_out"] = (now, True)
+
+    def _note_outing_ended(self, outing_type, student_uid=None):
+        """Optimistically remove an outing from the in-memory list after it ends."""
+        uid = student_uid or ""
+        with self._outing_snapshot_lock:
+            if uid:
+                self._outing_snapshot = [
+                    o for o in self._outing_snapshot
+                    if not (o.get("type") == outing_type and (o.get("student_uid") or "") == uid)
+                ]
+            else:
+                self._outing_snapshot = [
+                    o for o in self._outing_snapshot if o.get("type") != outing_type
+                ]
+            outings = list(self._outing_snapshot)
+        now = time.monotonic()
+        self._cache["active_outings"] = (now, outings)
+        self._cache["has_students_out"] = (now, len(outings) > 0)
+
+    def _student_name_for_identifier(self, identifier):
+        """Best-effort name lookup for optimistic outing rows."""
+        if not identifier:
+            return "Student"
+        try:
+            result = self.get_student_by_uid(identifier)
+            if result:
+                return result[1] or "Student"
+        except Exception:
+            pass
+        try:
+            result = self.get_student_by_student_id(identifier)
+            if result:
+                return result[1] or "Student"
+        except Exception:
+            pass
+        return "Student"
+
     # ------------------------------------------------------------------
     # Snapshot listeners (real-time, replaces polling when online)
     # ------------------------------------------------------------------
@@ -707,6 +766,14 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            msg = str(result[1]).lower()
+            if "previous break ended" in msg:
+                self._note_outing_ended("Bathroom", identifier)
+            else:
+                self._note_outing_started(
+                    "Bathroom", identifier, self._student_name_for_identifier(identifier)
+                )
         return result
     
     def end_bathroom_break(self, identifier):
@@ -718,6 +785,8 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            self._note_outing_ended("Bathroom", identifier)
         return result
     
     def is_at_nurse(self, identifier):
@@ -730,6 +799,7 @@ class OnlineFirstDatabase:
     
     def start_nurse_visit(self, nfc_uid=None, student_id=None):
         """Start nurse visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.start_nurse_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -737,10 +807,19 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            msg = str(result[1]).lower()
+            if "previous nurse visit ended" in msg:
+                self._note_outing_ended("Nurse", identifier)
+            else:
+                self._note_outing_started(
+                    "Nurse", identifier, self._student_name_for_identifier(identifier)
+                )
         return result
     
     def end_nurse_visit(self, nfc_uid=None, student_id=None):
         """End nurse visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.end_nurse_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -748,6 +827,8 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            self._note_outing_ended("Nurse", identifier)
         return result
     
     def is_at_water(self, identifier):
@@ -760,6 +841,7 @@ class OnlineFirstDatabase:
     
     def start_water_visit(self, nfc_uid=None, student_id=None):
         """Start water visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.start_water_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -767,10 +849,19 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            msg = str(result[1]).lower()
+            if "previous water visit ended" in msg:
+                self._note_outing_ended("Water", identifier)
+            else:
+                self._note_outing_started(
+                    "Water", identifier, self._student_name_for_identifier(identifier)
+                )
         return result
     
     def end_water_visit(self, nfc_uid=None, student_id=None):
         """End water visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.end_water_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -778,6 +869,8 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            self._note_outing_ended("Water", identifier)
         return result
 
     def is_at_guidance(self, identifier):
@@ -790,6 +883,7 @@ class OnlineFirstDatabase:
 
     def start_guidance_visit(self, nfc_uid=None, student_id=None):
         """Start guidance visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.start_guidance_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -797,10 +891,19 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            msg = str(result[1]).lower()
+            if "previous guidance visit ended" in msg:
+                self._note_outing_ended("Guidance", identifier)
+            else:
+                self._note_outing_started(
+                    "Guidance", identifier, self._student_name_for_identifier(identifier)
+                )
         return result
 
     def end_guidance_visit(self, nfc_uid=None, student_id=None):
         """End guidance visit"""
+        identifier = nfc_uid or student_id
         if self.mode == "online" and self.firebase_db:
             result = self.firebase_db.end_guidance_visit(nfc_uid, student_id)
         elif self.mode == "offline" and self.local_db:
@@ -808,6 +911,8 @@ class OnlineFirstDatabase:
         else:
             return False, "Database not available"
         self._invalidate_outing_caches()
+        if result and result[0]:
+            self._note_outing_ended("Guidance", identifier)
         return result
     
     def has_students_out(self):

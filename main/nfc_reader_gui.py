@@ -748,7 +748,7 @@ class NFCReaderGUI(QMainWindow):
             success, message = self.db.end_bathroom_break(identifier)
             if success:
                 self.show_prompt_message("Bathroom break ended!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.bathroom_overlay.hide)
             else:
                 self.show_error_message(message)
@@ -760,7 +760,7 @@ class NFCReaderGUI(QMainWindow):
                     self.show_prompt_message("Bathroom break ended!")
                 else:
                     self.show_prompt_message("Bathroom break started!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.bathroom_overlay.hide)
                 if not ended_existing_break:
                     print_name = student_name_db
@@ -862,7 +862,7 @@ class NFCReaderGUI(QMainWindow):
             success, message = self.db.end_nurse_visit(**visit_kwargs)
             if success:
                 self.show_prompt_message("Nurse visit ended!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.nurse_overlay.hide)
             else:
                 self.show_error_message(message)
@@ -874,7 +874,7 @@ class NFCReaderGUI(QMainWindow):
                     self.show_prompt_message("Nurse visit ended!")
                 else:
                     self.show_prompt_message("Nurse visit started!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.nurse_overlay.hide)
 
                 if not ended_existing_visit:
@@ -932,7 +932,7 @@ class NFCReaderGUI(QMainWindow):
             success, message = self.db.end_water_visit(**visit_kwargs)
             if success:
                 self.show_prompt_message("Water visit ended!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.water_overlay.hide)
             else:
                 self.show_error_message(message)
@@ -944,7 +944,7 @@ class NFCReaderGUI(QMainWindow):
                     self.show_prompt_message("Water visit ended!")
                 else:
                     self.show_prompt_message("Water visit started!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.water_overlay.hide)
 
                 if not ended_existing_visit:
@@ -1001,7 +1001,7 @@ class NFCReaderGUI(QMainWindow):
             success, message = self.db.end_guidance_visit(**visit_kwargs)
             if success:
                 self.show_prompt_message("Guidance visit ended!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.guidance_overlay.hide)
             else:
                 self.show_error_message(message)
@@ -1013,7 +1013,7 @@ class NFCReaderGUI(QMainWindow):
                     self.show_prompt_message("Guidance visit ended!")
                 else:
                     self.show_prompt_message("Guidance visit started!")
-                self.update_gpio_led_status()  # Immediately update GPIO LED
+                self._refresh_outing_ui()
                 QTimer.singleShot(3000, self.guidance_overlay.hide)
 
                 if not ended_existing_visit:
@@ -1150,14 +1150,17 @@ class NFCReaderGUI(QMainWindow):
 
     def update_prompt_status(self):
         """If someone is out, show their name and elapsed time in the prompt."""
-        if self._prompt_override_active:
-            return
-
         try:
             outings = self.db.get_active_outings()
         except Exception as exc:
             print(f"[PROMPT] Unable to fetch active outings: {exc}")
             outings = []
+
+        # Always refresh tiles / system pill immediately; only the prompt text
+        # is deferred while a temporary success/error message is showing.
+        self._update_visit_button_labels(outings)
+        if self._prompt_override_active:
+            return
 
         if outings:
             active = outings[0]
@@ -1169,7 +1172,11 @@ class NFCReaderGUI(QMainWindow):
             self.prompt.setText(f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}")
         else:
             self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
-        self._update_visit_button_labels(outings)
+
+    def _refresh_outing_ui(self):
+        """Immediately apply LED + tile lockout after a visit starts or ends."""
+        self.update_gpio_led_status()
+        self.update_prompt_status()
 
     def _update_visit_button_labels(self, outings):
         """Flip destination tiles to their 'End …' state while a visit is active."""
@@ -1177,9 +1184,9 @@ class NFCReaderGUI(QMainWindow):
         active_types = {o.get("type") for o in outings}
         for destination, tile in self.destination_tiles.items():
             tile.set_active(destination in active_types)
-            # Water is never locked by another outing. Bathroom stays tappable
-            # so the student who is out can end it; a second bathroom start is
-            # blocked in process_bathroom_entry / the NFC picker.
+            # Bathroom stays tappable so the student who is out can END it.
+            # A second bathroom start is blocked in process_bathroom_entry /
+            # the NFC picker. Water is never locked by another outing.
             if destination in ("Bathroom", "Water"):
                 tile.setEnabled(True)
 
