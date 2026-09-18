@@ -48,7 +48,6 @@ class NFCReaderGUI(QMainWindow):
     RED_LED_PIN = 18      # GPIO 18 - Students are out
     GREEN_LED_PIN = 16    # GPIO 16 - No students out
     BASE_PROMPT = "Select your hall pass destination"
-    _MIN_PRESS_DURATION_S = 0.1  # 100ms ghost-touch filter threshold
     _INFO_MESSAGE_MS = 3500
     _ERROR_MESSAGE_MS = 7000
     _VISIT_ACTION_COOLDOWN_S = 4
@@ -157,28 +156,22 @@ class NFCReaderGUI(QMainWindow):
         self.settings_overlay = SettingsOverlay(self)
         self.password_overlay = PasswordOverlay(self)
         self.password_overlay.authenticated.connect(self._show_settings_overlay)
-        self.home.settings_button.clicked.connect(self._show_pin_overlay)
+        self.home.settings_button.pressed.connect(self._show_pin_overlay)
         self.bathroom_mode = False
-        self.break_start_button.clicked.connect(self.show_bathroom_overlay)
+        self.break_start_button.pressed.connect(self.show_bathroom_overlay)
         self.bathroom_overlay = BathroomOverlay(self)
         
         # Connect nurse button to nurse overlay
-        self.nurse_button.clicked.connect(self.show_nurse_overlay)
+        self.nurse_button.pressed.connect(self.show_nurse_overlay)
         self.nurse_overlay = NurseOverlay(self)
         
         # Connect water button to water overlay
-        self.water_button.clicked.connect(self.show_water_overlay)
+        self.water_button.pressed.connect(self.show_water_overlay)
         self.water_overlay = WaterOverlay(self)
 
         # Connect guidance button to guidance overlay
-        self.guidance_button.clicked.connect(self.show_guidance_overlay)
+        self.guidance_button.pressed.connect(self.show_guidance_overlay)
         self.guidance_overlay = GuidanceOverlay(self)
-
-        # Ghost-touch protection: track press timestamps on visit buttons
-        self._button_press_times = {}
-        for btn in self.destination_tiles.values():
-            btn.installEventFilter(self)
-            self._button_press_times[btn] = None
         
         # Try to auto-connect to ESP32
         self.auto_connect_esp32()
@@ -634,15 +627,9 @@ class NFCReaderGUI(QMainWindow):
             self.show_prompt_message(f"No student found with ID: {student_id}")
 
     def eventFilter(self, obj, event):
-        """Event filter for status pill tap (manual entry) and the ghost-touch
-        guard on destination tiles."""
-        if obj == self.prompt and event.type() == event.MouseButtonRelease:
+        """Open the manual-entry keypad when the status prompt is tapped."""
+        if obj == self.prompt and event.type() == event.MouseButtonPress:
             self.keypad_overlay.show_overlay()
-        if obj in self._button_press_times and event.type() == event.MouseButtonPress:
-            # Some touch panels emit multiple "press" events while contact is held.
-            # Only store the first press time so elapsed duration is meaningful.
-            if self._button_press_times.get(obj) is None:
-                self._button_press_times[obj] = datetime.now()
         return super().eventFilter(obj, event)
 
     def _show_pin_overlay(self):
@@ -653,41 +640,20 @@ class NFCReaderGUI(QMainWindow):
         """Show the settings overlay"""
         self.settings_overlay.show_overlay()
 
-    def _is_ghost_touch(self, button):
-        """Return True if the button press was shorter than the ghost-touch threshold."""
-        press_time = self._button_press_times.get(button)
-        if press_time is None:
-            return False
-        elapsed = (datetime.now() - press_time).total_seconds()
-        is_ghost = elapsed < self._MIN_PRESS_DURATION_S
-        if is_ghost:
-            print(f"[GHOST] Button press too short ({elapsed*1000:.0f}ms), ignoring")
-        # Clear so the next real interaction records a fresh press start.
-        self._button_press_times[button] = None
-        return is_ghost
-
     def show_bathroom_overlay(self):
         """Show the bathroom break overlay"""
-        if self._is_ghost_touch(self.break_start_button):
-            return
         self.bathroom_overlay.show_overlay()
 
     def show_nurse_overlay(self):
         """Show the nurse visit overlay"""
-        if self._is_ghost_touch(self.nurse_button):
-            return
         self.nurse_overlay.show_overlay()
     
     def show_water_overlay(self):
         """Show the water fountain overlay"""
-        if self._is_ghost_touch(self.water_button):
-            return
         self.water_overlay.show_overlay()
 
     def show_guidance_overlay(self):
         """Show the guidance office overlay"""
-        if self._is_ghost_touch(self.guidance_button):
-            return
         self.guidance_overlay.show_overlay()
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
@@ -1274,7 +1240,13 @@ def _apply_app_dialog_palette(app):
 
 def main():
     """Main entry point for the application"""
+    # Don't batch touch samples; kiosk taps should land immediately.
+    QApplication.setAttribute(Qt.AA_CompressHighFrequencyEvents, False)
     app = QApplication(sys.argv)
+    app.setDoubleClickInterval(200)
+    hints = app.styleHints()
+    if hints is not None:
+        hints.setMousePressAndHoldInterval(1)
     _apply_app_dialog_palette(app)
     window = NFCReaderGUI()
     window.show()

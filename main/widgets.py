@@ -210,6 +210,7 @@ class DestinationTile(QAbstractButton):
         self._active = False
         self.setText(destination)
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(90, 90)
 
