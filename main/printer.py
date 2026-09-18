@@ -1,7 +1,4 @@
-import qrcode
-from PIL import Image
 from datetime import datetime
-import io
 import time
 import threading
 import glob
@@ -402,13 +399,12 @@ def ensure_printer_packages():
     """
     import sys
 
-    packages = [
-        "python-escpos==3.0a9",
-        "pyserial>=3.5",
-        "pyusb>=1.2.1",
-        "Pillow",
-        "qrcode",
-    ]
+        packages = [
+            "python-escpos==3.0a9",
+            "pyserial>=3.5",
+            "pyusb>=1.2.1",
+            "Pillow",
+        ]
 
     running = sys.executable
     candidates = [running] if running else []
@@ -784,15 +780,22 @@ class ThermalPrinter:
 
     def _try_serial(self, devfile, baudrate=9600):
         print(f"[PRINTER] Trying serial {devfile} @ {baudrate}")
-        return EscposSerial(
+        printer = EscposSerial(
             devfile=devfile,
             baudrate=baudrate,
             bytesize=8,
             parity="N",
             stopbits=1,
-            timeout=1,
+            timeout=2,
             dsrdtr=False,
         )
+        # python-escpos 3.0a9 does not expose write_timeout; set it on the port
+        # so a stalled write cannot hang the worker forever.
+        try:
+            printer.device.write_timeout = 15
+        except Exception:
+            pass
+        return printer
 
     def _try_file(self, devfile):
         print(f"[PRINTER] Trying file {devfile}")
@@ -971,6 +974,27 @@ class ThermalPrinter:
                 self._disconnect()
         return False
 
+    def _flush(self):
+        """Push any buffered bytes out of the serial/file handle."""
+        device = getattr(self.printer, "device", None)
+        if device is None:
+            return
+        for name in ("flush", "flushOutput", "flush_output"):
+            method = getattr(device, name, None)
+            if callable(method):
+                try:
+                    method()
+                    return
+                except Exception:
+                    pass
+
+    def _write_text(self, text):
+        if not text:
+            return
+        if not text.endswith("\n"):
+            text += "\n"
+        self.printer._raw(text.encode("cp437", "replace"))
+
     def print_pass(
         self,
         student_name,
@@ -979,9 +1003,7 @@ class ThermalPrinter:
         location=None,
         timestamp=None,
     ):
-        """
-        Print a hall pass with QR code.
-        """
+        """Print a hall pass (text only — no QR)."""
         if not timestamp:
             timestamp = datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
@@ -992,43 +1014,28 @@ class ThermalPrinter:
             return False
 
         try:
-            self.printer.set(align='center')
-            self.printer.text("\n")
-            self.printer.set(align='center', bold=True, double_width=True, double_height=True)
-            self.printer.text(f"{pass_type.upper()}\n")
-            self.printer.set(align='center', bold=False, double_width=False, double_height=False)
-            self.printer.text("--------------------------------\n")
-            self.printer.text(f"Student: {student_name}\n")
-            self.printer.text(f"ID: {student_id}\n")
+            # Avoid printer.set() — some generic 58mm printers choke on it.
+            self.printer._raw(b"\x1b\x61\x01")  # center
+            self.printer._raw(b"\n")
+            self.printer._raw(b"\x1b\x45\x01")  # bold
+            self.printer._raw(b"\x1d\x21\x11")  # double width + height
+            self._write_text(pass_type.upper())
+            self.printer._raw(b"\x1d\x21\x00")
+            self.printer._raw(b"\x1b\x45\x00")
+            self._write_text("--------------------------------")
+            self._write_text(f"Student: {student_name}")
+            self._write_text(f"ID: {student_id}")
             if location:
-                self.printer.text(f"Loc: {location}\n")
-            self.printer.text(f"Time: {timestamp}\n")
-            self.printer.text("--------------------------------\n")
-
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=8,
-                border=2,
-            )
-            qr.add_data(str(student_id))
-            qr.make(fit=True)
-            
-            img_wrapper = qr.make_image(fill_color="black", back_color="white")
-            img_buffer = io.BytesIO()
-            img_wrapper.save(img_buffer, format="PNG")
-            img_buffer.seek(0)
-            pil_img = Image.open(img_buffer)
-            
-            self.printer.image(pil_img)
-            self.printer.text("Scan to Return\n")
-            for _ in range(5):
-                self.printer.control('LF')
+                self._write_text(f"Loc: {location}")
+            self._write_text(f"Time: {timestamp}")
+            self._write_text("--------------------------------")
+            self.printer._raw(b"\n\n\n")
             try:
                 self.printer.cut()
             except Exception:
-                pass
-            
+                self.printer._raw(b"\n")
+            self._flush()
+
             self.last_pass_params = {
                 "student_name": student_name,
                 "student_id": student_id,
