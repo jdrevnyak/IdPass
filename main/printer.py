@@ -399,12 +399,12 @@ def ensure_printer_packages():
     """
     import sys
 
-        packages = [
-            "python-escpos==3.0a9",
-            "pyserial>=3.5",
-            "pyusb>=1.2.1",
-            "Pillow",
-        ]
+    packages = [
+        "python-escpos==3.0a9",
+        "pyserial>=3.5",
+        "pyusb>=1.2.1",
+        "Pillow",
+    ]
 
     running = sys.executable
     candidates = [running] if running else []
