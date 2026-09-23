@@ -1245,7 +1245,8 @@ def main():
     app = QApplication(sys.argv)
     app.setDoubleClickInterval(200)
     hints = app.styleHints()
-    if hints is not None:
+    # Qt 5.15+ only; older Pi builds lack this setter.
+    if hints is not None and hasattr(hints, "setMousePressAndHoldInterval"):
         hints.setMousePressAndHoldInterval(1)
     _apply_app_dialog_palette(app)
     window = NFCReaderGUI()
