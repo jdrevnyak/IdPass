@@ -710,7 +710,11 @@ class ThermalPrinter:
         self.last_pass_params = None
         self.last_error = ""
         self.usb_timeout_ms = 8000
-        self._connect()
+        # Serialize connect/print/close across the GUI thread and print workers.
+        self._io_lock = threading.RLock()
+        # Defer open until the first job so USB/serial probing cannot stall or
+        # crash the Qt main thread at startup / when a printer is hot-plugged.
+        self.printer = None
 
     def configure(self, vendor_id, product_id, bus=None, address=None):
         """Point at a specific USB device and open a new handle."""
@@ -722,6 +726,10 @@ class ThermalPrinter:
 
     def _disconnect(self):
         """Release USB resources so the device can be opened again after errors or unplug."""
+        with self._io_lock:
+            self._disconnect_unlocked()
+
+    def _disconnect_unlocked(self):
         printer = self.printer
         self.printer = None
         if printer is None:
@@ -832,11 +840,15 @@ class ThermalPrinter:
         return self._candidate_serial_ports()
 
     def _connect(self):
+        with self._io_lock:
+            self._connect_unlocked()
+
+    def _connect_unlocked(self):
         if not ESCPOS_AVAILABLE:
             self.last_error = "python-escpos is not installed"
             return
 
-        self._disconnect()
+        self._disconnect_unlocked()
         self.last_error = ""
         errors = []
         bauds = DEFAULT_SERIAL_BAUDRATES
@@ -941,8 +953,9 @@ class ThermalPrinter:
 
     def reconnect(self):
         """Drop any existing USB session and open a fresh connection."""
-        self._connect()
-        return self.is_connected()
+        with self._io_lock:
+            self._connect_unlocked()
+            return self.is_connected()
 
     def is_connected(self):
         return self.printer is not None
@@ -953,10 +966,12 @@ class ThermalPrinter:
         A handle left over from an earlier print can accept the open but fail on the
         first write. Probing with an initialize command (which prints nothing) keeps
         that failure out of the job itself, so a job is never sent twice.
+
+        Caller must hold self._io_lock.
         """
         for attempt in range(2):
             if not self.is_connected():
-                self._connect()
+                self._connect_unlocked()
                 if not self.is_connected():
                     return False
             try:
@@ -971,7 +986,7 @@ class ThermalPrinter:
                 print(
                     f"[PRINTER] Printer did not respond, attempt {attempt + 1}/2: {e}"
                 )
-                self._disconnect()
+                self._disconnect_unlocked()
         return False
 
     def _flush(self):
@@ -1009,50 +1024,51 @@ class ThermalPrinter:
 
         print(f"[PRINTER] Printing {pass_type} for {student_name} ({student_id})")
 
-        if not self._prepare_for_job():
-            print(f"[PRINTER] Printer not available, skipping print. {self.last_error}")
-            return False
+        with self._io_lock:
+            if not self._prepare_for_job():
+                print(f"[PRINTER] Printer not available, skipping print. {self.last_error}")
+                return False
 
-        try:
-            # Avoid printer.set() — some generic 58mm printers choke on it.
-            self.printer._raw(b"\x1b\x61\x01")  # center
-            self.printer._raw(b"\n")
-            self.printer._raw(b"\x1b\x45\x01")  # bold
-            self.printer._raw(b"\x1d\x21\x11")  # double width + height
-            self._write_text(pass_type.upper())
-            self.printer._raw(b"\x1d\x21\x00")
-            self.printer._raw(b"\x1b\x45\x00")
-            self._write_text("--------------------------------")
-            self._write_text(f"Student: {student_name}")
-            self._write_text(f"ID: {student_id}")
-            if location:
-                self._write_text(f"Loc: {location}")
-            self._write_text(f"Time: {timestamp}")
-            self._write_text("--------------------------------")
-            self.printer._raw(b"\n\n\n")
             try:
-                self.printer.cut()
-            except Exception:
+                # Avoid printer.set() — some generic 58mm printers choke on it.
+                self.printer._raw(b"\x1b\x61\x01")  # center
                 self.printer._raw(b"\n")
-            self._flush()
+                self.printer._raw(b"\x1b\x45\x01")  # bold
+                self.printer._raw(b"\x1d\x21\x11")  # double width + height
+                self._write_text(pass_type.upper())
+                self.printer._raw(b"\x1d\x21\x00")
+                self.printer._raw(b"\x1b\x45\x00")
+                self._write_text("--------------------------------")
+                self._write_text(f"Student: {student_name}")
+                self._write_text(f"ID: {student_id}")
+                if location:
+                    self._write_text(f"Loc: {location}")
+                self._write_text(f"Time: {timestamp}")
+                self._write_text("--------------------------------")
+                self.printer._raw(b"\n\n\n")
+                try:
+                    self.printer.cut()
+                except Exception:
+                    self.printer._raw(b"\n")
+                self._flush()
 
-            self.last_pass_params = {
-                "student_name": student_name,
-                "student_id": student_id,
-                "pass_type": pass_type,
-                "location": location,
-                "timestamp": timestamp,
-            }
-            self.last_error = ""
-            return True
+                self.last_pass_params = {
+                    "student_name": student_name,
+                    "student_id": student_id,
+                    "pass_type": pass_type,
+                    "location": location,
+                    "timestamp": timestamp,
+                }
+                self.last_error = ""
+                return True
 
-        except Exception as e:
-            print(f"[PRINTER] Print error: {e}")
-            self.last_error = f"{type(e).__name__}: {e}"
-            # The printer can put paper out and still report a timeout, so the job
-            # is never resent here. The next pass reconnects through the probe.
-            self._disconnect()
-            return False
+            except Exception as e:
+                print(f"[PRINTER] Print error: {e}")
+                self.last_error = f"{type(e).__name__}: {e}"
+                # The printer can put paper out and still report a timeout, so the job
+                # is never resent here. The next pass reconnects through the probe.
+                self._disconnect_unlocked()
+                return False
 
     def reprint_last_pass(self):
         """Reprint the most recently printed hall pass using cached parameters."""
@@ -1070,39 +1086,44 @@ class ThermalPrinter:
                 print(f"[PRINTER] Test skipped: {self.last_error}")
             return False
 
-        if not self.reconnect():
-            if not self.last_error:
-                self.last_error = "Could not open the printer (is ttyACM0/ttyUSB0 present? Power printer ON.)"
-            return False
-
-        ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
-        try:
-            # Wake and initialize embedded TTL mechanisms before printing.
-            # Avoid printer.set() — some generic profiles choke on it.
-            if self.backend_kind == "serial":
-                self.printer._raw(b"\xff")
-                time.sleep(0.05)
-            self.printer._raw(b"\x1b@")
-            self.printer._raw(b"\nIdPass printer test\n")
-            if self.backend_kind == "serial":
-                self.printer._raw(
-                    f"Port: {self.devfile}\nBaud: {self.baudrate}\n".encode(
-                        "ascii", "replace"
+        with self._io_lock:
+            self._connect_unlocked()
+            if not self.is_connected():
+                if not self.last_error:
+                    self.last_error = (
+                        "Could not open the printer "
+                        "(is ttyACM0/ttyUSB0 present? Power printer ON.)"
                     )
-                )
-            self.printer._raw(ts.encode("ascii", "replace") + b"\n")
-            self.printer._raw(b"--------------------------------\n\n\n\n")
+                return False
+
+            ts = datetime.now().strftime("%Y-%m-%d %I:%M %p")
             try:
-                self.printer.cut()
-            except Exception:
-                self.printer._raw(b"\n\n\n")
-            self.last_error = ""
-            return True
-        except Exception as e:
-            self.last_error = str(e)
-            print(f"[PRINTER] Test print error: {e}")
-            self._disconnect()
-            return False
+                # Wake and initialize embedded TTL mechanisms before printing.
+                # Avoid printer.set() — some generic profiles choke on it.
+                if self.backend_kind == "serial":
+                    self.printer._raw(b"\xff")
+                    time.sleep(0.05)
+                self.printer._raw(b"\x1b@")
+                self.printer._raw(b"\nIdPass printer test\n")
+                if self.backend_kind == "serial":
+                    self.printer._raw(
+                        f"Port: {self.devfile}\nBaud: {self.baudrate}\n".encode(
+                            "ascii", "replace"
+                        )
+                    )
+                self.printer._raw(ts.encode("ascii", "replace") + b"\n")
+                self.printer._raw(b"--------------------------------\n\n\n\n")
+                try:
+                    self.printer.cut()
+                except Exception:
+                    self.printer._raw(b"\n\n\n")
+                self.last_error = ""
+                return True
+            except Exception as e:
+                self.last_error = str(e)
+                print(f"[PRINTER] Test print error: {e}")
+                self._disconnect_unlocked()
+                return False
 
 
 if __name__ == "__main__":

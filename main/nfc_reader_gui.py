@@ -326,27 +326,25 @@ class NFCReaderGUI(QMainWindow):
         super().closeEvent(event)
     
     def auto_connect_esp32(self):
-        """Automatically try to connect to ESP32 on UART ports"""
+        """Automatically try to connect to ESP32 on board UART ports only.
+
+        Never open /dev/ttyUSB* or /dev/ttyACM* here — those are the receipt
+        printer. Grabbing them makes the next hall-pass print crash the app.
+        """
         print("[INFO] Starting ESP32 auto-connect...")
         try:
+            import os
             # UART ports for Raspberry Pi (ESP32 connected via UART)
             # Prioritize the working port first (/dev/ttyAMA0)
             uart_ports = ['/dev/ttyAMA0', '/dev/serial0', '/dev/ttyAMA10', '/dev/ttyS0']
-            # Fallback to USB ports if UART doesn't work
-            usb_ports = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
+            print(f"[INFO] Will try ESP32 ports: {uart_ports}")
 
-            # Try UART ports first
-            all_ports = uart_ports + usb_ports
-            print(f"[INFO] Will try ports: {all_ports}")
-            
-            for port in all_ports:
+            for port in uart_ports:
                 try:
-                    # Check if port exists
-                    import os
                     if not os.path.exists(port):
                         print(f"[INFO] Port {port} does not exist, skipping")
                         continue
-                    
+
                     print(f"[INFO] Attempting to connect to {port}...")
                     self.serial_connection = serial.Serial(port, 115200, timeout=0.1)
                     print(f"[SUCCESS] Auto-connected to ESP32 on {port}")
@@ -355,8 +353,9 @@ class NFCReaderGUI(QMainWindow):
                 except Exception as e:
                     print(f"[ERROR] Failed to connect to {port}: {e}")
                     continue
-            
-            print("[WARNING] No ESP32 found on UART or USB ports")
+
+            print("[WARNING] No ESP32 found on board UART ports "
+                  "(not probing ttyUSB/ttyACM — reserved for printer)")
         except Exception as e:
             print(f"[ERROR] Auto-connect error: {e}")
 
@@ -1027,7 +1026,8 @@ class NFCReaderGUI(QMainWindow):
             return
         try:
             if self.serial_connection.is_open and self.serial_connection.in_waiting:
-                data = self.serial_connection.readline().decode('utf-8').strip()
+                raw = self.serial_connection.readline()
+                data = raw.decode("utf-8", errors="replace").strip()
                 print(f"[DEBUG] Received serial data: '{data}'")
                 if data:
                     self.connection_error_count = 0
