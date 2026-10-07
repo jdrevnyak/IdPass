@@ -531,9 +531,13 @@ class OTAUpdateManager:
                             time.sleep(60)
 
                     if exit_code == 75:
-                        # Explicit Restart button. Do not run a GitHub check here;
-                        # simply start the application again immediately.
+                        # Explicit Restart button. Do not run a GitHub check here,
+                        # but apply anything already downloaded to deposit/.
                         self.logger("Intentional application restart requested.")
+                        if self.check_for_updates():
+                            self.logger("Pending update in deposit folder, applying before restart...")
+                            if not self.apply_update():
+                                self.logger("Update failed, keeping current version", "ERROR")
                         main_process = self._start_main_application()
                         continue
 
