@@ -3,8 +3,8 @@ Custom widgets for the NFC Reader GUI application.
 """
 
 from PyQt5.QtWidgets import (QWidget, QFrame, QAbstractButton, QSizePolicy,
-                             QVBoxLayout, QHBoxLayout, QLabel)
-from PyQt5.QtCore import QTimer, QTime, Qt, QRect, QRectF, QSize, QPointF
+                             QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QScroller)
+from PyQt5.QtCore import QTimer, QTime, Qt, QRect, QRectF, QSize, QPointF, QEvent
 from PyQt5.QtGui import (QFont, QColor, QPainter, QPen, QBrush, QLinearGradient,
                          QPainterPath, QPolygonF, QFontMetrics)
 
@@ -350,6 +350,7 @@ class HomeScreen(QWidget):
     _CARD_PAD = 12
     _GAP = 10
     _STATUS_H = 52
+    _VISIBLE_TILES = 4.4
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -404,6 +405,7 @@ class HomeScreen(QWidget):
         card_layout.setSpacing(self._GAP)
 
         self._tile_host = QWidget()
+        self._tile_host.setStyleSheet("background: transparent;")
         tile_row = QHBoxLayout(self._tile_host)
         tile_row.setContentsMargins(0, 0, 0, 0)
         tile_row.setSpacing(self._GAP)
@@ -411,9 +413,21 @@ class HomeScreen(QWidget):
         for destination in self.DESTINATIONS:
             tile = DestinationTile(destination)
             self.tiles[destination] = tile
-            tile_row.addWidget(tile, 1)
-        self._tile_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        card_layout.addWidget(self._tile_host, 1)
+            tile_row.addWidget(tile)
+
+        self._tile_scroll = QScrollArea()
+        self._tile_scroll.setFrameShape(QFrame.NoFrame)
+        self._tile_scroll.setStyleSheet("background: transparent;")
+        self._tile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tile_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tile_scroll.setWidget(self._tile_host)
+        self._tile_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._tile_scroll.viewport().installEventFilter(self)
+        QScroller.grabGesture(self._tile_scroll.viewport(), QScroller.LeftMouseButtonGesture)
+        QScroller.scroller(self._tile_scroll.viewport()).stateChanged.connect(
+            self._on_scroll_state
+        )
+        card_layout.addWidget(self._tile_scroll, 1)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
@@ -439,6 +453,29 @@ class HomeScreen(QWidget):
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         body_layout.addWidget(card, 1)
         root.addWidget(self._body, 1)
+
+    def eventFilter(self, obj, event):
+        if obj is self._tile_scroll.viewport() and event.type() == QEvent.Resize:
+            self._size_tiles()
+        return super().eventFilter(obj, event)
+
+    def _on_scroll_state(self, state):
+        # A swipe must not also open the tile the finger started on.
+        if state in (QScroller.Dragging, QScroller.Scrolling):
+            for tile in self.tiles.values():
+                tile.setDown(False)
+
+    def _size_tiles(self):
+        """Fit about four and a half tiles so the next one peeks in as a scroll hint."""
+        viewport = self._tile_scroll.viewport()
+        count = len(self.tiles)
+        visible = min(float(count), self._VISIBLE_TILES)
+        tile_w = int((viewport.width() - self._GAP * (visible - 1)) / visible)
+        for tile in self.tiles.values():
+            tile.setFixedSize(tile_w, viewport.height())
+        self._tile_host.setFixedSize(
+            tile_w * count + self._GAP * (count - 1), viewport.height()
+        )
 
     def set_datetime_text(self, text):
         self.datetime_label.setText(text)
