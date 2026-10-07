@@ -33,6 +33,7 @@ DESTINATION_STYLES = {
     "Nurse": {"glyph": "plus", "gradient": ("#f0455f", "#d92c50")},
     "Water": {"glyph": "droplet", "gradient": ("#12a3dd", "#0b83c6")},
     "Guidance": {"glyph": "computer", "gradient": ("#a24df0", "#7b3fe4")},
+    "Pass Out": {"glyph": "door", "gradient": ("#f59e0b", "#d97706")},
 }
 
 # Shown on a tile whose visit type is currently active.
@@ -114,6 +115,12 @@ def draw_glyph(painter, name, size, color, stroke=2.0):
         painter.drawLine(QPointF(13.8, 15.6), QPointF(13.8, 18.4))
         painter.drawLine(QPointF(7.4, 18.4), QPointF(16.6, 18.4))
         painter.drawLine(QPointF(6.2, 20.4), QPointF(17.8, 20.4))
+    elif name == "door":
+        painter.drawLine(QPointF(3.5, 21.0), QPointF(20.5, 21.0))
+        painter.drawRect(QRectF(6.0, 3.0, 12.0, 18.0))
+        painter.setBrush(QBrush(QColor(color)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(15.0, 12.5), 1.3, 1.3)
     elif name == "compass":
         painter.drawEllipse(QPointF(12, 12), 7.5, 7.5)
         painter.drawLine(QPointF(8.8, 15.2), QPointF(15.2, 8.8))
@@ -336,7 +343,7 @@ class HomeScreen(QWidget):
     Pure presentation -- the application wires up behaviour by connecting to
     ``tiles``, ``prompt``, ``top_bar`` and ``system_pill``."""
 
-    DESTINATIONS = ("Bathroom", "Nurse", "Water", "Guidance")
+    DESTINATIONS = ("Bathroom", "Nurse", "Water", "Guidance", "Pass Out")
 
     # Tight padding so the card fills an 800x480 kiosk without a dark band.
     _BODY_MARGINS = (10, 8, 10, 8)

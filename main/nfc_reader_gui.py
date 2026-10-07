@@ -29,7 +29,7 @@ from online_first_db import OnlineFirstDatabase
 from widgets import HomeScreen
 from dialogs import AddStudentDialog, ImportDialog
 from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay,
-                     NurseOverlay, WaterOverlay, GuidanceOverlay, AddStudentOverlay,
+                     NurseOverlay, WaterOverlay, GuidanceOverlay, PassOutOverlay, AddStudentOverlay,
                      StudentSelectionOverlay, BreakTypePickerOverlay, PasswordOverlay)
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
@@ -100,6 +100,7 @@ class NFCReaderGUI(QMainWindow):
         self.nurse_button = self.destination_tiles["Nurse"]
         self.water_button = self.destination_tiles["Water"]
         self.guidance_button = self.destination_tiles["Guidance"]
+        self.pass_out_button = self.destination_tiles["Pass Out"]
 
         self._base_prompt_text = self.BASE_PROMPT
         self._prompt_override_active = False
@@ -172,6 +173,9 @@ class NFCReaderGUI(QMainWindow):
         # Connect guidance button to guidance overlay
         self.guidance_button.clicked.connect(self.show_guidance_overlay)
         self.guidance_overlay = GuidanceOverlay(self)
+
+        self.pass_out_overlay = PassOutOverlay(self)
+        self.pass_out_button.clicked.connect(self.show_pass_out_overlay)
         
         # Try to auto-connect to ESP32
         self.auto_connect_esp32()
@@ -657,6 +661,43 @@ class NFCReaderGUI(QMainWindow):
         """Show the guidance office overlay"""
         QTimer.singleShot(0, self.guidance_overlay.show_overlay)
 
+    def show_pass_out_overlay(self):
+        """Show the teacher-issued Pass Out slip overlay"""
+        QTimer.singleShot(0, self.pass_out_overlay.show_overlay)
+
+    def lookup_pass_out_student(self, student_id=None, nfc_uid=None):
+        """Return (name, student_id) for a Pass Out slip, or None after showing an error."""
+        if nfc_uid:
+            result = self.db.get_student_by_uid(nfc_uid)
+            if not result:
+                self.show_error_message("No student found with that card.")
+                return None
+            student_id_db, student_name_db = result
+            return student_name_db, student_id_db
+        student_id = normalize_student_id_key(student_id) if student_id else None
+        if not student_id:
+            self.show_error_message("No student information provided.")
+            return None
+        result = self.db.get_student_by_student_id(student_id)
+        if not result:
+            self.show_error_message("No student found with that ID.")
+            return None
+        _, student_name_db = result
+        return student_name_db, student_id
+
+    def print_pass_out(self, student_name, student_id, destination_room):
+        """Print a Pass Out slip; nothing is recorded as an outing."""
+        now = datetime.now()
+        details = [
+            ("Date", now.strftime("%Y-%m-%d")),
+            ("Time", now.strftime("%I:%M %p")),
+            ("From", self.classroom_id or "Not set"),
+            ("Teacher", self.teacher_name or "Not set"),
+            ("Going to", destination_room),
+        ]
+        self.show_prompt_message(f"Printing pass for {student_name}")
+        self._print_pass_async(student_name, student_id, "PASS OUT", details=details)
+
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
         # Unified logic: use nfc_uid if available, else use student_id
@@ -737,7 +778,7 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.show_error_message(message)
 
-    def _print_pass_async(self, student_name, student_id, pass_type, location=None):
+    def _print_pass_async(self, student_name, student_id, pass_type, location=None, details=None):
         """Print a hall pass on a background thread so USB I/O cannot freeze the UI."""
         printer = getattr(self, "printer", None)
         if printer is None:
@@ -750,6 +791,7 @@ class NFCReaderGUI(QMainWindow):
                     student_id,
                     pass_type=pass_type,
                     location=location,
+                    details=details,
                 )
                 if not printed:
                     reason = getattr(printer, "last_error", "") or "printer not responding"
@@ -1060,6 +1102,12 @@ class NFCReaderGUI(QMainWindow):
                         if self.guidance_overlay.isVisible():
                             print(f"[DEBUG] Processing guidance entry with UID: {uid}")
                             self.guidance_overlay.process_card(uid)
+                            return
+
+                        if self.pass_out_overlay.isVisible():
+                            if self.pass_out_overlay.is_awaiting_student():
+                                print(f"[DEBUG] Pass Out student card UID: {uid}")
+                                self.pass_out_overlay.process_card(uid)
                             return
 
                         # Dismiss an open break picker before processing new tap

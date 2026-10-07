@@ -1017,8 +1017,13 @@ class ThermalPrinter:
         pass_type="HALL PASS",
         location=None,
         timestamp=None,
+        details=None,
     ):
-        """Print a hall pass (text only — no QR)."""
+        """Print a hall pass (text only — no QR).
+
+        ``details`` is an optional list of (label, value) lines printed in place
+        of the default Loc/Time lines.
+        """
         if not timestamp:
             timestamp = datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
@@ -1041,9 +1046,13 @@ class ThermalPrinter:
                 self._write_text("--------------------------------")
                 self._write_text(f"Student: {student_name}")
                 self._write_text(f"ID: {student_id}")
-                if location:
-                    self._write_text(f"Loc: {location}")
-                self._write_text(f"Time: {timestamp}")
+                if details:
+                    for label, value in details:
+                        self._write_text(f"{label}: {value}")
+                else:
+                    if location:
+                        self._write_text(f"Loc: {location}")
+                    self._write_text(f"Time: {timestamp}")
                 self._write_text("--------------------------------")
                 self.printer._raw(b"\n\n\n")
                 try:
@@ -1058,6 +1067,7 @@ class ThermalPrinter:
                     "pass_type": pass_type,
                     "location": location,
                     "timestamp": timestamp,
+                    "details": details,
                 }
                 self.last_error = ""
                 return True

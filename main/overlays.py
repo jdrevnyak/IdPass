@@ -2256,6 +2256,175 @@ class GuidanceOverlay(VisitOverlay):
     ENTRY_METHOD = "process_guidance_entry"
 
 
+class PassOutOverlay(QWidget):
+    """Teacher-issued slip for a student held after class: ID or card, then room.
+
+    Prints only; nothing is recorded as an outing.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(15, 20, 32, 0.72);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setVisible(False)
+        if parent:
+            self.setGeometry(parent.rect())
+        self.parent = parent
+        self._student = None
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        card, widgets = _build_id_keypad_card(
+            self,
+            destination="Pass Out",
+            submit_label="NEXT",
+            on_submit=self._submit_id,
+            on_cancel=self.hide,
+        )
+        self._keypad = widgets
+        self._card = card
+        layout.addWidget(card)
+
+        self._room_card = QWidget(self)
+        self._room_card.setStyleSheet("background: #ffffff; border-radius: 18px;")
+        _size_id_keypad_card(self._room_card, parent)
+        room_box = QVBoxLayout(self._room_card)
+        room_box.setContentsMargins(24, 20, 24, 20)
+        room_box.setSpacing(14)
+
+        self._student_label = QLabel("")
+        self._student_label.setAlignment(Qt.AlignCenter)
+        self._student_label.setFont(QFont("Arial", 18, QFont.Bold))
+        self._student_label.setStyleSheet("color: #1e293b;")
+        room_box.addWidget(self._student_label)
+
+        room_title = QLabel("Going to which room?")
+        room_title.setAlignment(Qt.AlignCenter)
+        room_title.setFont(QFont("Arial", 14))
+        room_title.setStyleSheet("color: #64748b;")
+        room_box.addWidget(room_title)
+
+        self.room_input = QLineEdit()
+        self.room_input.setAlignment(Qt.AlignCenter)
+        self.room_input.setFont(QFont("Arial", 22, QFont.Bold))
+        self.room_input.setFixedHeight(56)
+        self.room_input.setPlaceholderText("Tap to enter room")
+        self.room_input.setStyleSheet(
+            "QLineEdit { background: #f1f5f9; color: #1e293b; border: 1px solid #cbd5e1; "
+            "border-radius: 10px; padding: 6px; }"
+        )
+        self.room_input.installEventFilter(self)
+        room_box.addWidget(self.room_input)
+
+        self._room_error = QLabel("")
+        self._room_error.setAlignment(Qt.AlignCenter)
+        self._room_error.setFont(QFont("Arial", 12))
+        self._room_error.setStyleSheet("color: #b71c1c;")
+        room_box.addWidget(self._room_error)
+        room_box.addStretch(1)
+
+        room_buttons = QHBoxLayout()
+        room_buttons.setSpacing(12)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setMinimumHeight(56)
+        cancel_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #e2e8f0; color: #334155; border: none; "
+            "border-radius: 14px; }"
+            "QPushButton:pressed { background: #cbd5e1; }"
+        )
+        cancel_btn.clicked.connect(self.hide)
+        room_buttons.addWidget(cancel_btn, 1)
+
+        print_btn = QPushButton("PRINT PASS")
+        print_btn.setMinimumHeight(56)
+        print_btn.setFont(QFont("Arial", 15, QFont.Bold))
+        print_btn.setStyleSheet(_GREEN_STYLE)
+        print_btn.clicked.connect(self._submit_room)
+        room_buttons.addWidget(print_btn, 2)
+        room_box.addLayout(room_buttons)
+
+        layout.addWidget(self._room_card)
+        self._room_card.hide()
+
+        self.keyboard = OnScreenKeyboard(self)
+
+    def show_overlay(self):
+        self._student = None
+        self._keypad["clear"]()
+        self.room_input.setText("")
+        self._room_error.setText("")
+        self._room_card.hide()
+        self._card.show()
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+        _size_id_keypad_card(self._card, self)
+        self.setVisible(True)
+        self.raise_()
+
+    def is_awaiting_student(self):
+        return self.isVisible() and self._student is None
+
+    def _submit_id(self, student_id):
+        if student_id:
+            self._lookup(student_id=student_id)
+
+    def ok_pressed(self):
+        self._submit_id(self._keypad["digits"]["value"])
+
+    def process_card(self, nfc_uid):
+        self._lookup(nfc_uid=nfc_uid)
+
+    def _lookup(self, **kwargs):
+        student = self.parent.lookup_pass_out_student(**kwargs)
+        if not student:
+            self.hide()
+            return
+        self._student = student
+        self._student_label.setText(f"{student[0]} (ID: {student[1]})")
+        self._card.hide()
+        _size_id_keypad_card(self._room_card, self)
+        self._room_card.show()
+        self.keyboard.show_for(self.room_input, "Going to which room?")
+
+    def _submit_room(self):
+        room = self.room_input.text().strip()
+        if not room:
+            self._room_error.setText("Enter the room the student is going to.")
+            self.keyboard.show_for(self.room_input, "Going to which room?")
+            return
+        name, student_id = self._student
+        self.hide()
+        self.parent.print_pass_out(name, student_id, room)
+
+    def eventFilter(self, obj, event):
+        if obj is self.room_input and event.type() == QEvent.MouseButtonPress:
+            self._room_error.setText("")
+            self.keyboard.show_for(self.room_input, "Going to which room?")
+            return True
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, event):
+        self.keyboard.hide()
+        self._student = None
+        super().hideEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+        if hasattr(self, "_card"):
+            _size_id_keypad_card(self._card, self)
+            _size_id_keypad_card(self._room_card, self)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+
+
 class AddStudentOverlay(QWidget):
     """Overlay for adding new students to the database."""
     
