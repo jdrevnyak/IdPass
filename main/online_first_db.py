@@ -80,6 +80,11 @@ class OnlineFirstDatabase:
         self._offline_poll_interval = 10
         self._last_wifi_stimulate = 0.0
         self._wifi_stimulate_interval = 120
+        # Serialize offline↔online transitions (GUI force-sync + monitor thread).
+        self._transition_lock = threading.Lock()
+        self._transitioning = False
+        # After link-up, wait before talking to Firebase (DHCP/DNS/gRPC settle).
+        self._online_settle_seconds = 3.0
 
         # Polling throttle: cache results and gate write operations so
         # high-frequency GUI timers (1 s) don't hammer Firestore.
@@ -248,90 +253,131 @@ class OnlineFirstDatabase:
             
             if not self.check_active:
                 break
-            
-            print(f"[ONLINE-FIRST] Checking connectivity (was_online={self.is_online}, mode={self.mode})...")
-            was_online = self.is_online
-            currently_online = self.check_internet_connection()
-            print(f"[ONLINE-FIRST] Connectivity check result: currently_online={currently_online}")
 
-            if not currently_online:
-                self._maybe_stimulate_wifi()
-            
-            if was_online != currently_online:
-                self.is_online = currently_online
-                
-                if currently_online:
-                    # We just came online!
-                    print("[ONLINE-FIRST] ✓ Connection restored! Transitioning to online mode...")
-                    self._transition_to_online()
-                else:
-                    # We just went offline
-                    print("[ONLINE-FIRST] ⚠ Connection lost! Transitioning to offline mode...")
-                    self._transition_to_offline()
-            elif not was_online and self.mode == "offline":
-                # We started offline but now have internet - sync any offline data
-                if currently_online:
-                    print("[ONLINE-FIRST] ✓ Internet detected while offline! Attempting to sync...")
+            try:
+                print(f"[ONLINE-FIRST] Checking connectivity (was_online={self.is_online}, mode={self.mode})...")
+                was_online = self.is_online
+                currently_online = self.check_internet_connection()
+                print(f"[ONLINE-FIRST] Connectivity check result: currently_online={currently_online}")
+
+                if not currently_online:
+                    self._maybe_stimulate_wifi()
+
+                if was_online != currently_online:
+                    if currently_online:
+                        # We just came online — settle before Firebase/gRPC.
+                        print(
+                            "[ONLINE-FIRST] ✓ Connection restored! "
+                            f"Waiting {self._online_settle_seconds:.0f}s for network settle..."
+                        )
+                        time.sleep(self._online_settle_seconds)
+                        if not self.check_active:
+                            break
+                        if not self.check_internet_connection():
+                            print("[ONLINE-FIRST] Link dropped during settle; staying offline")
+                            continue
+                        self.is_online = True
+                        self._transition_to_online()
+                    else:
+                        self.is_online = False
+                        print("[ONLINE-FIRST] ⚠ Connection lost! Transitioning to offline mode...")
+                        self._transition_to_offline()
+                elif not was_online and self.mode == "offline" and currently_online:
+                    print(
+                        "[ONLINE-FIRST] ✓ Internet detected while offline! "
+                        f"Waiting {self._online_settle_seconds:.0f}s then syncing..."
+                    )
+                    time.sleep(self._online_settle_seconds)
+                    if not self.check_active:
+                        break
+                    if not self.check_internet_connection():
+                        print("[ONLINE-FIRST] Link dropped during settle; staying offline")
+                        continue
                     self.is_online = True
                     self._transition_to_online()
+            except Exception as e:
+                # Never let the monitor thread die — one bad Firebase/Wi-Fi
+                # transition must not leave the kiosk stuck without recovery.
+                print(f"[ONLINE-FIRST] Connectivity worker error: {e}")
+                try:
+                    self.is_online = False
+                    self.mode = "offline"
+                except Exception:
+                    pass
         
         print("[ONLINE-FIRST] Connectivity worker thread stopped")
     
     def _transition_to_online(self):
         """Handle transition from offline to online mode"""
-        # Initialize Firebase if not already done
-        if self.firebase_db is None:
-            print("[ONLINE-FIRST] Initializing Firebase connection...")
-            
-            def init_firebase():
-                from firebase_db import FirebaseDatabase
-                return FirebaseDatabase(classroom_context=self.classroom_context)
-            
-            try:
-                self.firebase_db = run_with_timeout(init_firebase, 10)
-                print("[ONLINE-FIRST] ✓ Firebase connected")
-            except TimeoutError:
-                print(f"[ONLINE-FIRST] ✗ Firebase initialization timed out")
-                self.mode = "offline"
-                return
-            except Exception as e:
-                print(f"[ONLINE-FIRST] ✗ Failed to initialize Firebase: {e}")
-                self.mode = "offline"
-                return
-        
-        self.mode = "online"
-        self._start_outing_listeners()
-        self.backfill_active_records()
-        
-        # If we have local data, sync it to Firebase
-        if self.local_db is not None:
-            print("[ONLINE-FIRST] Checking for local changes to sync...")
-            try:
-                # Check if there's any data to sync
-                cursor = self.local_db.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM bathroom_breaks")
-                breaks_count = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM nurse_visits")
-                visits_count = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM water_visits")
-                water_count = cursor.fetchone()[0]
+        if not self._transition_lock.acquire(blocking=False):
+            print("[ONLINE-FIRST] Online transition already in progress; skipping")
+            return
+        self._transitioning = True
+        try:
+            # Initialize Firebase on THIS background thread (no abandoned timeout
+            # worker — that left half-initialized gRPC clients that crash Pis).
+            if self.firebase_db is None:
+                print("[ONLINE-FIRST] Initializing Firebase connection...")
                 try:
-                    cursor.execute("SELECT COUNT(*) FROM guidance_visits")
-                    guidance_count = cursor.fetchone()[0]
-                except Exception:
-                    guidance_count = 0
-                
-                if breaks_count > 0 or visits_count > 0 or water_count > 0 or guidance_count > 0:
-                    print(f"[ONLINE-FIRST] Found offline data: {breaks_count} breaks, {visits_count} visits, {water_count} water visits, {guidance_count} guidance visits")
-                    print("[ONLINE-FIRST] Syncing local changes to Firebase...")
-                    self._sync_local_to_firebase()
-                    self._clear_local_database()
-                    print("[ONLINE-FIRST] ✓ Local data synced and cleared")
-                else:
-                    print("[ONLINE-FIRST] No offline data to sync")
+                    from firebase_db import FirebaseDatabase
+                    self.firebase_db = FirebaseDatabase(
+                        classroom_context=self.classroom_context
+                    )
+                    print("[ONLINE-FIRST] ✓ Firebase connected")
+                except Exception as e:
+                    print(f"[ONLINE-FIRST] ✗ Failed to initialize Firebase: {e}")
+                    self.firebase_db = None
+                    self.is_online = False
+                    self.mode = "offline"
+                    return
+
+            self.mode = "online"
+            try:
+                self._start_outing_listeners()
             except Exception as e:
-                print(f"[ONLINE-FIRST] ✗ Error syncing local data: {e}")
-                self.mode = "offline"  # Stay offline if sync failed
+                print(f"[ONLINE-FIRST] Outing listeners failed (polling fallback): {e}")
+                self._outing_listeners_active = False
+
+            try:
+                self.backfill_active_records()
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Backfill skipped: {e}")
+
+            # If we have local data, sync it to Firebase
+            if self.local_db is not None:
+                print("[ONLINE-FIRST] Checking for local changes to sync...")
+                try:
+                    cursor = self.local_db.conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM bathroom_breaks")
+                    breaks_count = cursor.fetchone()[0]
+                    cursor.execute("SELECT COUNT(*) FROM nurse_visits")
+                    visits_count = cursor.fetchone()[0]
+                    cursor.execute("SELECT COUNT(*) FROM water_visits")
+                    water_count = cursor.fetchone()[0]
+                    try:
+                        cursor.execute("SELECT COUNT(*) FROM guidance_visits")
+                        guidance_count = cursor.fetchone()[0]
+                    except Exception:
+                        guidance_count = 0
+
+                    if breaks_count > 0 or visits_count > 0 or water_count > 0 or guidance_count > 0:
+                        print(
+                            f"[ONLINE-FIRST] Found offline data: {breaks_count} breaks, "
+                            f"{visits_count} visits, {water_count} water visits, "
+                            f"{guidance_count} guidance visits"
+                        )
+                        print("[ONLINE-FIRST] Syncing local changes to Firebase...")
+                        self._sync_local_to_firebase()
+                        self._clear_local_database()
+                        print("[ONLINE-FIRST] ✓ Local data synced and cleared")
+                    else:
+                        print("[ONLINE-FIRST] No offline data to sync")
+                except Exception as e:
+                    print(f"[ONLINE-FIRST] ✗ Error syncing local data: {e}")
+                    # Stay online for reads; local sync can retry later.
+        finally:
+            self._transitioning = False
+            self._transition_lock.release()
     
     def _check_and_sync_offline_data_on_startup(self):
         """Check if there's offline data when starting in online mode and sync it"""
@@ -384,11 +430,18 @@ class OnlineFirstDatabase:
     
     def _transition_to_offline(self):
         """Handle transition from online to offline mode"""
-        print("[ONLINE-FIRST] Transitioning to offline mode...")
-        self._stop_outing_listeners()
-        self.mode = "offline"
-        self.init_local_db()
-        print("[ONLINE-FIRST] ✓ Offline mode active - using local database")
+        with self._transition_lock:
+            print("[ONLINE-FIRST] Transitioning to offline mode...")
+            try:
+                self._stop_outing_listeners()
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Error stopping listeners: {e}")
+            self.mode = "offline"
+            try:
+                self.init_local_db()
+            except Exception as e:
+                print(f"[ONLINE-FIRST] Local DB init failed offline: {e}")
+            print("[ONLINE-FIRST] ✓ Offline mode active - using local database")
     
     def _sync_local_to_firebase(self):
         """Sync all local SQLite data to Firebase Firestore"""

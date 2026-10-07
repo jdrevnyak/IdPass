@@ -140,7 +140,7 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
         btn.setFont(QFont("Arial", 18, QFont.Bold))
         btn.setFocusPolicy(Qt.NoFocus)
         btn.setStyleSheet(_DIGIT_STYLE)
-        btn.pressed.connect(lambda _, d=digit: _append(d))
+        btn.clicked.connect(lambda _, d=digit: _append(d))
         grid.addWidget(btn, i // 3, i % 3)
 
     clear_btn = QPushButton("CLEAR")
@@ -149,7 +149,7 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
     clear_btn.setFont(QFont("Arial", 12, QFont.Bold))
     clear_btn.setFocusPolicy(Qt.NoFocus)
     clear_btn.setStyleSheet(_RED_STYLE)
-    clear_btn.pressed.connect(_clear)
+    clear_btn.clicked.connect(_clear)
     grid.addWidget(clear_btn, 3, 0)
 
     zero_btn = QPushButton("0")
@@ -158,7 +158,7 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
     zero_btn.setFont(QFont("Arial", 18, QFont.Bold))
     zero_btn.setFocusPolicy(Qt.NoFocus)
     zero_btn.setStyleSheet(_DIGIT_STYLE)
-    zero_btn.pressed.connect(lambda: _append("0"))
+    zero_btn.clicked.connect(lambda: _append("0"))
     grid.addWidget(zero_btn, 3, 1)
 
     back_btn = _BackspaceButton("")
@@ -166,7 +166,7 @@ def _build_id_keypad_card(parent, *, destination="", submit_label="CREATE PASS",
     back_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     back_btn.setFocusPolicy(Qt.NoFocus)
     back_btn.setStyleSheet(_RED_STYLE)
-    back_btn.pressed.connect(_backspace)
+    back_btn.clicked.connect(_backspace)
     grid.addWidget(back_btn, 3, 2)
     body.addLayout(grid, 3)
 
@@ -331,7 +331,7 @@ class OnScreenKeyboard(QWidget):
                 btn.setFixedSize(self._KEY_W, self._KEY_H)
                 btn.setFont(QFont('Arial', 16, QFont.Bold))
                 btn.setStyleSheet(key_style)
-                btn.pressed.connect(lambda _, char=key: self._append_text(char))
+                btn.clicked.connect(lambda _, char=key: self._append_text(char))
                 row_layout.addWidget(btn)
             row_layout.addStretch(1)
             vbox.addLayout(row_layout)
@@ -355,12 +355,8 @@ class OnScreenKeyboard(QWidget):
                 f"QPushButton {{ background: {bg}; color: white; border-radius: 10px; padding: 0 18px; }}"
                 f"QPushButton:pressed {{ background: {self._darken_color(bg, 0.75)}; }}"
             )
-            # Done hides the keyboard; fire on release so the lift does not
-            # click through to whatever is underneath.
-            if label == "Done":
-                btn.clicked.connect(handler)
-            else:
-                btn.pressed.connect(handler)
+            # Always fire on release so overlays/hides never run mid-grab on Pi touch.
+            btn.clicked.connect(handler)
             control_layout.addWidget(btn, 1)
 
         vbox.addLayout(control_layout)
@@ -484,14 +480,14 @@ class PasswordOverlay(QWidget):
             btn.setFixedSize(90, 64)
             btn.setFont(QFont("Arial", 24, QFont.Bold))
             btn.setStyleSheet(digit_style)
-            btn.pressed.connect(lambda _, d=digit: self._digit_pressed(d))
+            btn.clicked.connect(lambda _, d=digit: self._digit_pressed(d))
             grid.addWidget(btn, i // 3, i % 3, Qt.AlignCenter)
 
         zero_btn = QPushButton("0")
         zero_btn.setFixedSize(90, 64)
         zero_btn.setFont(QFont("Arial", 24, QFont.Bold))
         zero_btn.setStyleSheet(digit_style)
-        zero_btn.pressed.connect(lambda: self._digit_pressed("0"))
+        zero_btn.clicked.connect(lambda: self._digit_pressed("0"))
         grid.addWidget(zero_btn, 3, 1, Qt.AlignCenter)
 
         backspace_btn = QPushButton("\u232b")
@@ -501,7 +497,7 @@ class PasswordOverlay(QWidget):
             "QPushButton { background: #e67e22; color: white; border-radius: 12px; }"
             "QPushButton:pressed { background: #bf6516; }"
         )
-        backspace_btn.pressed.connect(self._backspace)
+        backspace_btn.clicked.connect(self._backspace)
         grid.addWidget(backspace_btn, 3, 2, Qt.AlignCenter)
 
         clear_btn = QPushButton("C")
@@ -511,7 +507,7 @@ class PasswordOverlay(QWidget):
             "QPushButton { background: #c0392b; color: white; border-radius: 12px; }"
             "QPushButton:pressed { background: #922b21; }"
         )
-        clear_btn.pressed.connect(self._clear)
+        clear_btn.clicked.connect(self._clear)
         grid.addWidget(clear_btn, 3, 0, Qt.AlignCenter)
 
         vbox.addLayout(grid)

@@ -156,21 +156,21 @@ class NFCReaderGUI(QMainWindow):
         self.settings_overlay = SettingsOverlay(self)
         self.password_overlay = PasswordOverlay(self)
         self.password_overlay.authenticated.connect(self._show_settings_overlay)
-        self.home.settings_button.pressed.connect(self._show_pin_overlay)
+        self.home.settings_button.clicked.connect(self._show_pin_overlay)
         self.bathroom_mode = False
-        self.break_start_button.pressed.connect(self.show_bathroom_overlay)
+        self.break_start_button.clicked.connect(self.show_bathroom_overlay)
         self.bathroom_overlay = BathroomOverlay(self)
         
         # Connect nurse button to nurse overlay
-        self.nurse_button.pressed.connect(self.show_nurse_overlay)
+        self.nurse_button.clicked.connect(self.show_nurse_overlay)
         self.nurse_overlay = NurseOverlay(self)
         
         # Connect water button to water overlay
-        self.water_button.pressed.connect(self.show_water_overlay)
+        self.water_button.clicked.connect(self.show_water_overlay)
         self.water_overlay = WaterOverlay(self)
 
         # Connect guidance button to guidance overlay
-        self.guidance_button.pressed.connect(self.show_guidance_overlay)
+        self.guidance_button.clicked.connect(self.show_guidance_overlay)
         self.guidance_overlay = GuidanceOverlay(self)
         
         # Try to auto-connect to ESP32
@@ -627,33 +627,35 @@ class NFCReaderGUI(QMainWindow):
 
     def eventFilter(self, obj, event):
         """Open the manual-entry keypad when the status prompt is tapped."""
-        if obj == self.prompt and event.type() == event.MouseButtonPress:
+        # Use release (not press): showing an overlay mid-press crashes on some
+        # Pi touch stacks when the grab is still held.
+        if obj == self.prompt and event.type() == event.MouseButtonRelease:
             self.keypad_overlay.show_overlay()
         return super().eventFilter(obj, event)
 
     def _show_pin_overlay(self):
         """Ask for the settings PIN after the gear icon is tapped."""
-        self.password_overlay.show_overlay()
+        QTimer.singleShot(0, self.password_overlay.show_overlay)
 
     def _show_settings_overlay(self):
         """Show the settings overlay"""
-        self.settings_overlay.show_overlay()
+        QTimer.singleShot(0, self.settings_overlay.show_overlay)
 
     def show_bathroom_overlay(self):
         """Show the bathroom break overlay"""
-        self.bathroom_overlay.show_overlay()
+        QTimer.singleShot(0, self.bathroom_overlay.show_overlay)
 
     def show_nurse_overlay(self):
         """Show the nurse visit overlay"""
-        self.nurse_overlay.show_overlay()
+        QTimer.singleShot(0, self.nurse_overlay.show_overlay)
     
     def show_water_overlay(self):
         """Show the water fountain overlay"""
-        self.water_overlay.show_overlay()
+        QTimer.singleShot(0, self.water_overlay.show_overlay)
 
     def show_guidance_overlay(self):
         """Show the guidance office overlay"""
-        self.guidance_overlay.show_overlay()
+        QTimer.singleShot(0, self.guidance_overlay.show_overlay)
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
@@ -1117,27 +1119,34 @@ class NFCReaderGUI(QMainWindow):
     def update_prompt_status(self):
         """If someone is out, show their name and elapsed time in the prompt."""
         try:
-            outings = self.db.get_active_outings()
+            try:
+                outings = self.db.get_active_outings()
+            except Exception as exc:
+                print(f"[PROMPT] Unable to fetch active outings: {exc}")
+                outings = []
+
+            # Always refresh tiles / system pill immediately; only the prompt text
+            # is deferred while a temporary success/error message is showing.
+            self._update_visit_button_labels(outings)
+            if self._prompt_override_active:
+                return
+
+            if outings:
+                active = outings[0]
+                start = active.get("start")
+                if not isinstance(start, datetime):
+                    raise TypeError(f"outing start is {type(start)!r}, expected datetime")
+                elapsed = datetime.now() - start
+                minutes = int(elapsed.total_seconds() // 60)
+                seconds = int(elapsed.total_seconds() % 60)
+                label = active.get('type', 'Out')
+                student_name = active.get('student_name', 'Student')
+                self.prompt.setText(f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}")
+            else:
+                self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
         except Exception as exc:
-            print(f"[PROMPT] Unable to fetch active outings: {exc}")
-            outings = []
-
-        # Always refresh tiles / system pill immediately; only the prompt text
-        # is deferred while a temporary success/error message is showing.
-        self._update_visit_button_labels(outings)
-        if self._prompt_override_active:
-            return
-
-        if outings:
-            active = outings[0]
-            elapsed = datetime.now() - active['start']
-            minutes = int(elapsed.total_seconds() // 60)
-            seconds = int(elapsed.total_seconds() % 60)
-            label = active.get('type', 'Out')
-            student_name = active.get('student_name', 'Student')
-            self.prompt.setText(f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}")
-        else:
-            self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
+            # A bad outing row must never take down the Qt event loop.
+            print(f"[PROMPT] update_prompt_status failed: {exc}")
 
     def _refresh_outing_ui(self):
         """Immediately apply LED + tile lockout after a visit starts or ends."""
@@ -1240,14 +1249,7 @@ def _apply_app_dialog_palette(app):
 
 def main():
     """Main entry point for the application"""
-    # Don't batch touch samples; kiosk taps should land immediately.
-    QApplication.setAttribute(Qt.AA_CompressHighFrequencyEvents, False)
     app = QApplication(sys.argv)
-    app.setDoubleClickInterval(200)
-    hints = app.styleHints()
-    # Qt 5.15+ only; older Pi builds lack this setter.
-    if hints is not None and hasattr(hints, "setMousePressAndHoldInterval"):
-        hints.setMousePressAndHoldInterval(1)
     _apply_app_dialog_palette(app)
     window = NFCReaderGUI()
     window.show()

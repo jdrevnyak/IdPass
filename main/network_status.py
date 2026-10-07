@@ -54,19 +54,26 @@ def _ssid_from_iw(iface: str) -> str:
     return m.group(1) if m else ""
 
 
-def _signal_from_nmcli() -> Optional[int]:
-    """Parse ACTIVE / SSID / SIGNAL lines: yes:MyNet:72 -> 72."""
-    ok, out, _ = _run(["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi"])
+def _signal_from_iw(iface: str) -> Optional[int]:
+    """Read signal from `iw` without triggering an nmcli Wi-Fi scan.
+
+    `nmcli dev wifi` rescans and can disrupt association / crash flaky Pi
+    NetworkManager stacks right after connect — never call it from the UI path.
+    """
+    ok, out, _ = _run(["iw", "dev", iface, "link"], timeout=3.0)
     if not ok or not out:
         return None
-    for line in out.splitlines():
-        parts = line.split(":")
-        if len(parts) >= 3 and parts[0].strip().lower() == "yes":
-            try:
-                return int(parts[2].strip())
-            except ValueError:
-                return None
-    return None
+    # Prefer signal strength in dBm, map roughly to 0–100 for the UI.
+    m = re.search(r"signal:\s*(-?\d+)", out)
+    if not m:
+        return None
+    try:
+        dbm = int(m.group(1))
+    except ValueError:
+        return None
+    # Typical Wi-Fi: -30 dBm excellent … -90 dBm unusable.
+    pct = int(max(0, min(100, 2 * (dbm + 100))))
+    return pct
 
 
 def _read_operstate(iface: str) -> str:
@@ -144,7 +151,7 @@ def get_wifi_info() -> Dict[str, object]:
                         ssid = line.split(":", 1)[1].strip()
                         break
         result["ssid"] = ssid or "(connected)"
-        sig = _signal_from_nmcli()
+        sig = _signal_from_iw(iface)
         result["signal_percent"] = sig
         if sig is not None:
             result["detail"] = f"Interface {iface} · signal ~{sig}%"

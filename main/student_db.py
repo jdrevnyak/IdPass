@@ -83,7 +83,10 @@ class StudentDatabase:
     
     def init_database(self):
         """Initialize the database with required tables"""
-        self.conn = sqlite3.connect(self.db_name)
+        # Connectivity / sync may touch this DB from a background thread while
+        # the GUI reads it — allow cross-thread use (still serialize via Python GIL
+        # and short transactions; callers should avoid long overlapping writes).
+        self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
         cursor = self.conn.cursor()
         
         # Create students table (id = NFC UID, student_id = school number)
