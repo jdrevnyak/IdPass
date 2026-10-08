@@ -601,6 +601,15 @@ class PasswordOverlay(QWidget):
         cfg = load_device_config()
         return cfg.get("settings_pin", "1234")
 
+    def is_correct_pin(self, pin):
+        return pin == self._get_correct_pin()
+
+    def show_error(self, message):
+        """Reject the entered PIN and keep the overlay open."""
+        self._error_label.setText(message)
+        self._pin = ""
+        self._update_dots()
+
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_Escape:

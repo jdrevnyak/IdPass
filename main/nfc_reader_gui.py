@@ -662,8 +662,17 @@ class NFCReaderGUI(QMainWindow):
         QTimer.singleShot(0, self.guidance_overlay.show_overlay)
 
     def show_pass_out_overlay(self):
-        """Show the teacher-issued Pass Out slip overlay"""
-        QTimer.singleShot(0, self.pass_out_overlay.show_overlay)
+        """Ask for the settings PIN, then show the teacher-issued Pass Out overlay."""
+        def check_pin(pin):
+            if not self.password_overlay.is_correct_pin(pin):
+                self.password_overlay.show_error("Incorrect PIN")
+                return False
+            QTimer.singleShot(0, self.pass_out_overlay.show_overlay)
+            return True
+
+        QTimer.singleShot(0, lambda: self.password_overlay.show_overlay(
+            title="Teacher PIN", on_submit=check_pin
+        ))
 
     def lookup_pass_out_student(self, student_id=None, nfc_uid=None):
         """Return (name, student_id) for a Pass Out slip, or None after showing an error."""
