@@ -249,7 +249,7 @@ class FirebaseDatabase:
             return None
         except Exception as e:
             print(f"[FIREBASE] Error getting student by UID: {e}")
-            return None
+            raise
 
     def get_student_by_student_id(self, student_id: str) -> Optional[Tuple[str, str]]:
         """Get student information by school student_id (string or int in Firestore)."""
@@ -274,7 +274,7 @@ class FirebaseDatabase:
             return None
         except Exception as e:
             print(f"[FIREBASE] Error getting student by ID: {e}")
-            return None
+            raise
     
     def get_identifier(self, nfc_uid: Optional[str] = None, student_id: Optional[str] = None) -> Optional[str]:
         """Return the identifier to use: NFC UID if present, else student_id."""

@@ -592,6 +592,7 @@ class OnlineFirstDatabase:
             students_ref = self.firebase_db.db.collection('students').get()
             cursor = self.local_db.conn.cursor()
             synced_count = 0
+            kept_ids = []
             
             from student_db import normalize_nfc_uid
 
@@ -616,6 +617,15 @@ class OnlineFirstDatabase:
                         VALUES (?, ?, ?, ?)
                     """, (primary_key, student_id, name, created_at))
                     synced_count += 1
+                    kept_ids.append(primary_key)
+
+            # Firebase is the source of truth. A student deleted online must
+            # not remain in the offline cache and keep matching their card.
+            kept = set(kept_ids)
+            cursor.execute("SELECT id FROM students")
+            stale_ids = [row[0] for row in cursor.fetchall() if row[0] not in kept]
+            for stale_id in stale_ids:
+                cursor.execute("DELETE FROM students WHERE id = ?", (stale_id,))
             
             self.local_db.conn.commit()
             print(f"[ONLINE-FIRST] Synced {synced_count} students to local database")
@@ -777,30 +787,34 @@ class OnlineFirstDatabase:
         return False
     
     def get_student_by_uid(self, nfc_uid):
-        """Get student by NFC UID"""
-        result = None
+        """Get student by NFC UID.
+
+        While online, a Firebase miss means the card is not a student. The
+        local row is only a cache and is used when Firebase cannot be reached.
+        """
         if self.mode == "online" and self.firebase_db:
             try:
-                result = self.firebase_db.get_student_by_uid(nfc_uid)
+                return self.firebase_db.get_student_by_uid(nfc_uid)
             except Exception as e:
                 print(f"[ONLINE-FIRST] Firebase get_student_by_uid failed: {e}")
-                result = None
-        if result is None and self.local_db:
-            result = self.local_db.get_student_by_uid(nfc_uid)
-        return result
+        if self.local_db:
+            return self.local_db.get_student_by_uid(nfc_uid)
+        return None
     
     def get_student_by_student_id(self, student_id):
-        """Get student by student ID"""
-        result = None
+        """Get student by student ID.
+
+        While online, a Firebase miss is authoritative. The local row is used
+        only when that lookup fails.
+        """
         if self.mode == "online" and self.firebase_db:
             try:
-                result = self.firebase_db.get_student_by_student_id(student_id)
+                return self.firebase_db.get_student_by_student_id(student_id)
             except Exception as e:
                 print(f"[ONLINE-FIRST] Firebase get_student_by_student_id failed: {e}")
-                result = None
-        if result is None and self.local_db:
-            result = self.local_db.get_student_by_student_id(student_id)
-        return result
+        if self.local_db:
+            return self.local_db.get_student_by_student_id(student_id)
+        return None
     
     def is_on_break(self, identifier):
         """Check if student is on bathroom break"""
