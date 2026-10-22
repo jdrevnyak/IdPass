@@ -16,7 +16,7 @@ from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont, QPainter
 
 from printer import list_usb_devices
-from widgets import draw_glyph
+from widgets import DestinationTile, StatusPill, draw_glyph
 
 
 # Compact "Enter Student ID #" modal — shared by the destination keypad and
@@ -667,6 +667,7 @@ class SettingsOverlay(QWidget):
         self.setVisible(False)
         self.setGeometry(parent.rect())
         self.parent = parent
+        self._enroll_armed = False
         self.printer_test_finished.connect(self._printer_test_finished)
         self.printer_diag_finished.connect(self._printer_diag_finished)
 
@@ -924,14 +925,41 @@ class SettingsOverlay(QWidget):
         self.teacher_name_input = QLineEdit()
         _add_field_row("Teacher", self.teacher_name_input, "Teacher for this device")
 
-        classroom_buttons = QHBoxLayout()
-        classroom_buttons.setSpacing(8)
+        self.teacher_card_status = QLabel("No teacher card")
+        self.teacher_card_status.setWordWrap(True)
+        self.teacher_card_status.setStyleSheet(
+            "color: #23405a; font-size: 14px; font-weight: bold;"
+        )
+        classroom_layout.addWidget(self.teacher_card_status)
 
         button_style_template = (
             "QPushButton {{ background: {}; color: white; border-radius: 8px; padding: 8px 12px; font-size: 13px; min-height: 40px; }}"
             "QPushButton:hover {{ background: {}; }}"
             "QPushButton:pressed {{ background: {}; }}"
         )
+        card_buttons = QHBoxLayout()
+        card_buttons.setSpacing(8)
+        self.enroll_teacher_card_btn = QPushButton("Enroll teacher card")
+        self.enroll_teacher_card_btn.setStyleSheet(
+            button_style_template.format("#2bb3a3", "#249e90", "#1e857a")
+        )
+        self.enroll_teacher_card_btn.clicked.connect(self._arm_teacher_enroll)
+        card_buttons.addWidget(self.enroll_teacher_card_btn, 1)
+
+        self.clear_teacher_card_btn = QPushButton("Clear teacher card")
+        self.clear_teacher_card_btn.setStyleSheet(
+            "QPushButton { background: #e0e0e0; color: #23405a; border-radius: 8px; "
+            "padding: 8px 12px; font-size: 13px; min-height: 40px; } "
+            "QPushButton:hover { background: #cccccc; } "
+            "QPushButton:pressed { background: #bbbbbb; }"
+        )
+        self.clear_teacher_card_btn.clicked.connect(self._clear_teacher_card)
+        card_buttons.addWidget(self.clear_teacher_card_btn, 1)
+        classroom_layout.addLayout(card_buttons)
+
+        classroom_buttons = QHBoxLayout()
+        classroom_buttons.setSpacing(8)
+
         save_classroom_btn = QPushButton("Save")
         save_classroom_btn.setStyleSheet(button_style_template.format("#2bb3a3", "#249e90", "#1e857a"))
         save_classroom_btn.clicked.connect(self.save_classroom_settings)
@@ -1128,6 +1156,7 @@ class SettingsOverlay(QWidget):
         self._register_keyboard_field(self.teacher_name_input, "Teacher")
         self.populate_classroom_fields()
         self.refresh_printer_devices()
+        self._install_enroll_disarm_filters()
 
     def refresh_ports(self):
         """Refresh the list of available serial ports"""
@@ -1294,6 +1323,68 @@ class SettingsOverlay(QWidget):
         self._keyboard_fields[line_edit] = label
         line_edit.installEventFilter(self)
 
+    def _install_enroll_disarm_filters(self):
+        """A tap on any settings control other than Enroll cancels a waiting enroll."""
+        for widget in self.findChildren(QPushButton) + self.findChildren(QComboBox):
+            widget.installEventFilter(self)
+
+    def _teacher_card_enrolled(self):
+        uid = getattr(self.parent, "teacher_card_uid", None)
+        if uid is None:
+            uid = (getattr(self.parent, "device_config", {}) or {}).get("teacher_card_uid", "")
+        return bool(str(uid or "").strip())
+
+    def _refresh_teacher_card_status(self):
+        if self._enroll_armed:
+            self.teacher_card_status.setText("Tap the teacher card")
+            return
+        if self._teacher_card_enrolled():
+            self.teacher_card_status.setText("Teacher card enrolled")
+        else:
+            self.teacher_card_status.setText("No teacher card")
+
+    def is_enroll_armed(self):
+        return self._enroll_armed
+
+    def _arm_teacher_enroll(self):
+        self._enroll_armed = True
+        self._refresh_teacher_card_status()
+
+    def _disarm_teacher_enroll(self):
+        if not getattr(self, "_enroll_armed", False):
+            return
+        self._enroll_armed = False
+        self._refresh_teacher_card_status()
+
+    def accept_teacher_card_tap(self, uid):
+        """Enroll the tapped card, or keep waiting when the card is a student's."""
+        if not self._enroll_armed:
+            return
+        belongs = self.parent.card_belongs_to_student(uid)
+        if belongs is None:
+            self.teacher_card_status.setText("Couldn't check that card. Tap the teacher card.")
+            return
+        if belongs:
+            self.teacher_card_status.setText("That card belongs to a student. Tap the teacher card.")
+            return
+        self.parent.enroll_teacher_card(uid)
+        self._enroll_armed = False
+        self._refresh_teacher_card_status()
+
+    def _clear_teacher_card(self):
+        self._disarm_teacher_enroll()
+        reply = QMessageBox.question(
+            self,
+            "Clear teacher card",
+            "Clear the teacher card?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.parent.clear_teacher_card()
+        self._refresh_teacher_card_status()
+
     def eventFilter(self, obj, event):
         """Intercept direct taps on text fields to show the on-screen keyboard.
 
@@ -1301,6 +1392,12 @@ class SettingsOverlay(QWidget):
         (e.g. Updates) steals focus into Classroom ID and opens the keyboard
         instead of showing the update dialog.
         """
+        if (
+            self._enroll_armed
+            and event.type() == QEvent.MouseButtonPress
+            and obj is not self.enroll_teacher_card_btn
+        ):
+            self._disarm_teacher_enroll()
         if hasattr(self, '_keyboard_fields') and obj in self._keyboard_fields:
             if event.type() == QEvent.MouseButtonPress:
                 if hasattr(self, 'keyboard') and self.keyboard:
@@ -1325,6 +1422,8 @@ class SettingsOverlay(QWidget):
         else:
             status = "Current: Not configured"
         self.classroom_status_label.setText(status)
+        if hasattr(self, "teacher_card_status"):
+            self._refresh_teacher_card_status()
 
     def save_classroom_settings(self):
         """Persist classroom settings through the parent GUI."""
@@ -1542,78 +1641,8 @@ class SettingsOverlay(QWidget):
             return []
     
     def end_all_active_breaks(self):
-        """End all active bathroom breaks, nurse visits, water visits, and guidance visits"""
-        try:
-            outings = self.get_active_breaks_info()
-
-            if not outings:
-                QMessageBox.information(self, "No Active Breaks", "There are currently no active bathroom breaks, nurse visits, water visits, or guidance visits.")
-                return
-
-            type_labels = {
-                "Bathroom": "bathroom break",
-                "Nurse": "nurse visit",
-                "Water": "water visit",
-                "Guidance": "guidance visit",
-            }
-            break_list = [f"• {o['student_name']} ({type_labels.get(o['type'], o['type'])})" for o in outings]
-            break_text = "\n".join(break_list)
-
-            reply = QMessageBox.question(
-                self,
-                "End Active Breaks",
-                f"Are you sure you want to end all active breaks and visits?\n\n{break_text}",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-
-            if reply == QMessageBox.Yes:
-                ended_count = 0
-                errors = []
-
-                for outing in outings:
-                    uid = outing.get("student_uid", "")
-                    name = outing["student_name"]
-                    otype = outing["type"]
-                    try:
-                        if otype == "Bathroom":
-                            success, message = self.parent.db.end_bathroom_break(uid)
-                        elif otype == "Nurse":
-                            success, message = self.parent.db.end_nurse_visit(nfc_uid=uid)
-                        elif otype == "Water":
-                            success, message = self.parent.db.end_water_visit(nfc_uid=uid)
-                        elif otype == "Guidance":
-                            success, message = self.parent.db.end_guidance_visit(nfc_uid=uid)
-                        else:
-                            success, message = False, f"Unknown type: {otype}"
-                        if success:
-                            ended_count += 1
-                        else:
-                            errors.append(f"{name} ({otype}): {message}")
-                    except Exception as e:
-                        error_msg = f"{name} ({otype}): {e}"
-                        print(f"Error ending break for {error_msg}")
-                        errors.append(error_msg)
-
-                self.update_active_breaks_status()
-                self.parent.update_gpio_led_status()
-
-                if errors:
-                    error_text = "\n".join(errors[:5])
-                    if len(errors) > 5:
-                        error_text += f"\n... and {len(errors) - 5} more errors"
-                    QMessageBox.warning(
-                        self,
-                        "Breaks Ended with Errors",
-                        f"Successfully ended {ended_count} active break(s).\n\nErrors:\n{error_text}",
-                    )
-                else:
-                    QMessageBox.information(self, "Breaks Ended", f"Successfully ended {ended_count} active break(s).")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error ending active breaks: {str(e)}")
-            import traceback
-            traceback.print_exc()
+        """End all active bathroom breaks, nurse visits, water visits, and guidance visits."""
+        self.parent.end_active_outings(self)
     
     def run_printer_test(self):
         """Send a short test print and show whether the thermal printer responded."""
@@ -2088,6 +2117,7 @@ class SettingsOverlay(QWidget):
             self._wifi_refresh_timer.stop()
         if hasattr(self, 'keyboard') and self.keyboard:
             self.keyboard.hide()
+        self._disarm_teacher_enroll()
         super().hideEvent(event)
 
     def resizeEvent(self, event):
@@ -2265,6 +2295,219 @@ class GuidanceOverlay(VisitOverlay):
     ENTRY_METHOD = "process_guidance_entry"
 
 
+class TeacherMenuOverlay(QWidget):
+    """Actions reserved for the teacher card: end outings, pass out, reprint."""
+
+    _END_GRADIENT = ("#64748b", "#475569")
+    _REPRINT_GRADIENT = ("#6366f1", "#4f46e5")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(15, 20, 32, 0.72);")
+        self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setVisible(False)
+        if parent:
+            self.setGeometry(parent.rect())
+        self._printing = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 16)
+        root.setSpacing(12)
+
+        card = QFrame()
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setStyleSheet("background: #ffffff; border-radius: 16px;")
+        card_box = QVBoxLayout(card)
+        card_box.setContentsMargins(16, 16, 16, 16)
+        card_box.setSpacing(12)
+
+        self.heading = QLabel("Teacher")
+        self.heading.setAlignment(Qt.AlignCenter)
+        self.heading.setFont(QFont("Arial", 20, QFont.Bold))
+        self.heading.setStyleSheet("color: #1e293b;")
+        card_box.addWidget(self.heading)
+
+        tile_row = QHBoxLayout()
+        tile_row.setSpacing(10)
+        self.end_tile = DestinationTile(
+            "End active outings",
+            glyph="stop",
+            gradient=self._END_GRADIENT,
+            label="End active outings",
+        )
+        self.pass_out_tile = DestinationTile("Pass Out")
+        self.reprint_tile = DestinationTile(
+            "Reprint last pass",
+            glyph="printer",
+            gradient=self._REPRINT_GRADIENT,
+            label="Reprint last pass",
+        )
+        self._tiles = (self.end_tile, self.pass_out_tile, self.reprint_tile)
+        self.end_tile.clicked.connect(self._end_outings)
+        self.pass_out_tile.clicked.connect(self._start_pass_out)
+        self.reprint_tile.clicked.connect(self._reprint)
+        for tile in self._tiles:
+            tile_row.addWidget(tile, 1)
+        card_box.addLayout(tile_row, 1)
+
+        self.notice = QLabel("")
+        self.notice.setAlignment(Qt.AlignCenter)
+        self.notice.setWordWrap(True)
+        self.notice.setFont(QFont("Arial", 14, QFont.Bold))
+        self.notice.setStyleSheet("color: #b91c1c;")
+        self.notice.hide()
+        card_box.addWidget(self.notice)
+
+        self._print_label = QLabel("")
+        self._print_label.setAlignment(Qt.AlignCenter)
+        self._print_label.setWordWrap(True)
+        self._print_label.setFont(QFont("Arial", 18, QFont.Bold))
+        self._print_label.setStyleSheet("color: #1e293b;")
+        self._print_label.hide()
+        card_box.addWidget(self._print_label)
+
+        pill_row = QHBoxLayout()
+        pill_row.addStretch(1)
+        self.status_pill = StatusPill("System Ready")
+        self.status_pill.setFixedHeight(52)
+        pill_row.addWidget(self.status_pill, 0)
+        pill_row.addStretch(1)
+        card_box.addLayout(pill_row)
+        root.addWidget(card, 1)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumHeight(48)
+        self.cancel_btn.setFont(QFont("Arial", 16, QFont.Bold))
+        self.cancel_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: white; border: none; }"
+            "QPushButton:pressed { color: #cbd5e1; }"
+        )
+        self.cancel_btn.clicked.connect(self._cancel)
+        root.addWidget(self.cancel_btn)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(self._refresh_status)
+
+    def show_overlay(self):
+        self._printing = False
+        self._set_actions_enabled(True)
+        self._clear_notice()
+        self._print_label.hide()
+        self.status_pill.show()
+        name = (getattr(self.parent, "teacher_name", "") or "").strip()
+        self.heading.setText(name or "Teacher")
+        self._refresh_status()
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+        self.setVisible(True)
+        self.raise_()
+        self.setFocus()
+        self._status_timer.start()
+
+    def is_printing(self):
+        return self._printing
+
+    def show_notice(self, message):
+        self.notice.setText(message)
+        self.notice.show()
+
+    def _clear_notice(self):
+        self.notice.hide()
+        self.notice.setText("")
+
+    def _set_actions_enabled(self, enabled):
+        for tile in self._tiles:
+            tile.setEnabled(enabled)
+        self.cancel_btn.setEnabled(enabled)
+
+    def _refresh_status(self):
+        if self._printing:
+            return
+        try:
+            outings = self.parent.db.get_active_outings() or []
+        except Exception:
+            outings = []
+        count = len(outings)
+        if count:
+            noun = "Student" if count == 1 else "Students"
+            self.status_pill.set_state("busy", f"{count} {noun} Out")
+        else:
+            self.status_pill.set_state("ok", "System Ready")
+
+    def _end_outings(self):
+        if self._printing:
+            return
+        self._clear_notice()
+        if self.parent.end_active_outings(self):
+            self.hide()
+
+    def _start_pass_out(self):
+        if self._printing:
+            return
+        self._clear_notice()
+        self.parent.show_pass_out_overlay()
+
+    def _reprint(self):
+        if self._printing:
+            return
+        self._clear_notice()
+        printer = getattr(self.parent, "printer", None)
+        if printer is None:
+            QMessageBox.warning(self, "Reprint", "Printer is not available.")
+            return
+        result, msg = printer.reprint_last_pass()
+        if result:
+            QMessageBox.information(self, "Reprint", "Last hall pass reprinted successfully.")
+            self.hide()
+        else:
+            QMessageBox.warning(
+                self,
+                "Reprint",
+                msg or "Failed to reprint. Check the printer connection.",
+            )
+
+    def begin_printing(self, student_name):
+        self._printing = True
+        self._clear_notice()
+        self._set_actions_enabled(False)
+        self._print_label.setText(f"Printing pass for {student_name}")
+        self._print_label.show()
+        self.status_pill.hide()
+
+    def finish_printing(self, ok, reason):
+        self._printing = False
+        self._set_actions_enabled(True)
+        self._print_label.hide()
+        self.status_pill.show()
+        self._refresh_status()
+        if ok:
+            self.hide()
+            return
+        self.show_notice(reason or "Pass did not print.")
+
+    def _cancel(self):
+        if self._printing:
+            return
+        self.hide()
+
+    def hideEvent(self, event):
+        self._status_timer.stop()
+        super().hideEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.parent:
+            self.setGeometry(self.parent.rect())
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self._cancel()
+
+
 class PassOutOverlay(QWidget):
     """Teacher-issued slip for a student held after class: ID or card, then room.
 
@@ -2406,8 +2649,8 @@ class PassOutOverlay(QWidget):
             self.keyboard.show_for(self.room_input, "Going to which room?")
             return
         name, student_id = self._student
+        self.parent.print_pass_out(name, student_id, room, from_teacher_menu=True)
         self.hide()
-        self.parent.print_pass_out(name, student_id, room)
 
     def eventFilter(self, obj, event):
         if obj is self.room_input and event.type() == QEvent.MouseButtonPress:
@@ -2420,6 +2663,9 @@ class PassOutOverlay(QWidget):
         self.keyboard.hide()
         self._student = None
         super().hideEvent(event)
+        menu = getattr(self.parent, "teacher_menu", None)
+        if menu is not None and menu.isVisible():
+            menu.setFocus()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

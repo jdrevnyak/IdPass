@@ -29,7 +29,8 @@ from online_first_db import OnlineFirstDatabase
 from widgets import HomeScreen
 from dialogs import AddStudentDialog, ImportDialog
 from overlays import (KeypadOverlay, SettingsOverlay, BathroomOverlay,
-                     NurseOverlay, WaterOverlay, GuidanceOverlay, PassOutOverlay, AddStudentOverlay,
+                     NurseOverlay, WaterOverlay, GuidanceOverlay, PassOutOverlay,
+                     TeacherMenuOverlay, AddStudentOverlay,
                      StudentSelectionOverlay, BreakTypePickerOverlay, PasswordOverlay)
 from updater import UpdateManager
 from device_config import load_device_config, update_device_config
@@ -43,6 +44,8 @@ class NFCReaderGUI(QMainWindow):
 
     # Printing runs on a worker thread; this carries failures back to the GUI thread.
     printer_failed = pyqtSignal(str)
+    # Token, success, reason. The token ignores a stale pass-out print.
+    pass_print_finished = pyqtSignal(int, bool, str)
 
     # GPIO pin definitions for LEDs
     RED_LED_PIN = 18      # GPIO 18 - Students are out
@@ -51,6 +54,7 @@ class NFCReaderGUI(QMainWindow):
     _INFO_MESSAGE_MS = 3500
     _ERROR_MESSAGE_MS = 7000
     _VISIT_ACTION_COOLDOWN_S = 4
+    _TEACHER_TAP_WINDOW_S = 1.0
     # Derived from the canonical PERIODS list in student_db.py (single source of truth).
     # Overridden at runtime by periods loaded from Firebase when available.
     DEFAULT_SCHEDULE = [
@@ -100,7 +104,6 @@ class NFCReaderGUI(QMainWindow):
         self.nurse_button = self.destination_tiles["Nurse"]
         self.water_button = self.destination_tiles["Water"]
         self.guidance_button = self.destination_tiles["Guidance"]
-        self.pass_out_button = self.destination_tiles["Pass Out"]
 
         self._base_prompt_text = self.BASE_PROMPT
         self._prompt_override_active = False
@@ -145,6 +148,10 @@ class NFCReaderGUI(QMainWindow):
         self.current_student_id = None
         self._recent_visit_actions = {}
         self.printer_failed.connect(self.show_error_message)
+        self.pass_print_finished.connect(self._on_pass_print_finished)
+        self._pass_print_token = 0
+        self._pass_print_callback = None
+        self._last_teacher_toggle = None
 
         # Auto-end breaks during passing periods
         self._last_period = None
@@ -175,23 +182,23 @@ class NFCReaderGUI(QMainWindow):
         self.guidance_overlay = GuidanceOverlay(self)
 
         self.pass_out_overlay = PassOutOverlay(self)
-        self.pass_out_button.clicked.connect(self.show_pass_out_overlay)
-        
-        # Try to auto-connect to ESP32
-        self.auto_connect_esp32()
-        
+        self.teacher_menu = TeacherMenuOverlay(self)
+
         # Add student overlay
         self.add_student_overlay = AddStudentOverlay(self)
-        
+
         # Student selection overlay for linking NFC cards
         self.student_selection_overlay = StudentSelectionOverlay(self)
-        
+
         # Connect the card linking success signal
         self.student_selection_overlay.card_linked.connect(self.handle_card_linked)
 
         # Break-type picker overlay (shown on NFC tap / manual entry)
         self.break_picker_overlay = BreakTypePickerOverlay(self)
         self.break_picker_overlay.break_selected.connect(self._on_break_type_selected)
+
+        # Overlays exist before the reader can deliver a card.
+        self.auto_connect_esp32()
         
         # Initialize update manager (without automatic checking)
         self.update_manager = UpdateManager(
@@ -257,6 +264,7 @@ class NFCReaderGUI(QMainWindow):
         self.classroom_id = (self.device_config.get('classroom_id') or '').strip()
         self.classroom_label = (self.device_config.get('classroom_label') or '').strip()
         self.teacher_name = (self.device_config.get('teacher_name') or '').strip()
+        self.teacher_card_uid = normalize_nfc_uid(self.device_config.get('teacher_card_uid') or '')
 
         if refresh_prompt and hasattr(self, 'prompt'):
             self.refresh_classroom_prompt()
@@ -662,39 +670,38 @@ class NFCReaderGUI(QMainWindow):
         QTimer.singleShot(0, self.guidance_overlay.show_overlay)
 
     def show_pass_out_overlay(self):
-        """Ask for the settings PIN, then show the teacher-issued Pass Out overlay."""
-        def check_pin(pin):
-            if not self.password_overlay.is_correct_pin(pin):
-                self.password_overlay.show_error("Incorrect PIN")
-                return False
-            QTimer.singleShot(0, self.pass_out_overlay.show_overlay)
-            return True
-
-        QTimer.singleShot(0, lambda: self.password_overlay.show_overlay(
-            title="Teacher PIN", on_submit=check_pin
-        ))
+        """Show the pass-out keypad. The teacher card already opened the menu."""
+        QTimer.singleShot(0, self.pass_out_overlay.show_overlay)
 
     def lookup_pass_out_student(self, student_id=None, nfc_uid=None):
         """Return (name, student_id) for a Pass Out slip, or None after showing an error."""
         if nfc_uid:
             result = self.db.get_student_by_uid(nfc_uid)
             if not result:
-                self.show_error_message("No student found with that card.")
+                self._report_pass_out_error("No student found with that card.")
                 return None
             student_id_db, student_name_db = result
             return student_name_db, student_id_db
         student_id = normalize_student_id_key(student_id) if student_id else None
         if not student_id:
-            self.show_error_message("No student information provided.")
+            self._report_pass_out_error("No student information provided.")
             return None
         result = self.db.get_student_by_student_id(student_id)
         if not result:
-            self.show_error_message("No student found with that ID.")
+            self._report_pass_out_error("No student found with that ID.")
             return None
         _, student_name_db = result
         return student_name_db, student_id
 
-    def print_pass_out(self, student_name, student_id, destination_room):
+    def _report_pass_out_error(self, message):
+        """Show a pass-out lookup error on the teacher menu when it is open."""
+        menu = getattr(self, "teacher_menu", None)
+        if menu is not None and menu.isVisible():
+            menu.show_notice(message)
+            return
+        self.show_error_message(message)
+
+    def print_pass_out(self, student_name, student_id, destination_room, from_teacher_menu=False):
         """Print a Pass Out slip; nothing is recorded as an outing."""
         now = datetime.now()
         details = [
@@ -704,8 +711,153 @@ class NFCReaderGUI(QMainWindow):
             ("Teacher", self.teacher_name or "Not set"),
             ("Going to", destination_room),
         ]
+        if from_teacher_menu:
+            printer = getattr(self, "printer", None)
+            if printer is None:
+                self.teacher_menu.show_notice("Printer is not available.")
+                return
+            self.teacher_menu.begin_printing(student_name)
+            self._print_pass_async(
+                student_name,
+                student_id,
+                "PASS OUT",
+                details=details,
+                on_done=self._on_teacher_pass_printed,
+            )
+            return
         self.show_prompt_message(f"Printing pass for {student_name}")
         self._print_pass_async(student_name, student_id, "PASS OUT", details=details)
+
+    def _on_teacher_pass_printed(self, ok, reason):
+        self.teacher_menu.finish_printing(ok, reason)
+
+    def is_teacher_card(self, uid):
+        """This reader's enrolled card, checked before any student lookup."""
+        enrolled = normalize_nfc_uid(getattr(self, "teacher_card_uid", ""))
+        return bool(enrolled) and normalize_nfc_uid(uid) == enrolled
+
+    def card_belongs_to_student(self, uid):
+        """True, False, or None when the lookup itself fails."""
+        try:
+            return bool(self.db.get_student_by_uid(uid))
+        except Exception as exc:
+            print(f"[TEACHER] Student lookup failed: {exc}")
+            return None
+
+    def enroll_teacher_card(self, uid):
+        """Save this card as the reader’s teacher card. Does not require a classroom id."""
+        updated = update_device_config(teacher_card_uid=normalize_nfc_uid(uid))
+        self._set_classroom_attributes(updated, refresh_prompt=False)
+        return updated
+
+    def clear_teacher_card(self):
+        updated = update_device_config(teacher_card_uid="")
+        self._set_classroom_attributes(updated, refresh_prompt=False)
+        return updated
+
+    def _accept_teacher_toggle(self):
+        """Ignore a second read of the teacher card within about a second."""
+        now = datetime.now()
+        previous = self._last_teacher_toggle
+        if (
+            previous is not None
+            and (now - previous).total_seconds() < self._TEACHER_TAP_WINDOW_S
+        ):
+            return False
+        self._last_teacher_toggle = now
+        return True
+
+    def _open_teacher_menu(self):
+        if not self._accept_teacher_toggle():
+            return
+        self.teacher_menu.show_overlay()
+
+    def end_active_outings(self, dialog_parent):
+        """End every active outing for this classroom.
+
+        Returns True when at least one outing ended. The result dialog is
+        shown before returning, so the teacher menu can close after it.
+        """
+        try:
+            outings = self.db.get_active_outings() or []
+            if not outings:
+                QMessageBox.information(
+                    dialog_parent,
+                    "No Active Breaks",
+                    "There are currently no active bathroom breaks, nurse visits, "
+                    "water visits, or guidance visits.",
+                )
+                return False
+
+            type_labels = {
+                "Bathroom": "bathroom break",
+                "Nurse": "nurse visit",
+                "Water": "water visit",
+                "Guidance": "guidance visit",
+            }
+            break_text = "\n".join(
+                f"• {o['student_name']} ({type_labels.get(o['type'], o['type'])})"
+                for o in outings
+            )
+            reply = QMessageBox.question(
+                dialog_parent,
+                "End Active Breaks",
+                f"Are you sure you want to end all active breaks and visits?\n\n{break_text}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return False
+
+            ended_count = 0
+            errors = []
+            for outing in outings:
+                uid = outing.get("student_uid", "")
+                name = outing["student_name"]
+                otype = outing["type"]
+                try:
+                    if otype == "Bathroom":
+                        success, message = self.db.end_bathroom_break(uid)
+                    elif otype == "Nurse":
+                        success, message = self.db.end_nurse_visit(nfc_uid=uid)
+                    elif otype == "Water":
+                        success, message = self.db.end_water_visit(nfc_uid=uid)
+                    elif otype == "Guidance":
+                        success, message = self.db.end_guidance_visit(nfc_uid=uid)
+                    else:
+                        success, message = False, f"Unknown type: {otype}"
+                    if success:
+                        ended_count += 1
+                    else:
+                        errors.append(f"{name} ({otype}): {message}")
+                except Exception as exc:
+                    error_msg = f"{name} ({otype}): {exc}"
+                    print(f"Error ending break for {error_msg}")
+                    errors.append(error_msg)
+
+            if hasattr(self, "settings_overlay"):
+                self.settings_overlay.update_active_breaks_status()
+            self._refresh_outing_ui()
+
+            if errors:
+                error_text = "\n".join(errors[:5])
+                if len(errors) > 5:
+                    error_text += f"\n... and {len(errors) - 5} more errors"
+                QMessageBox.warning(
+                    dialog_parent,
+                    "Breaks Ended with Errors",
+                    f"Successfully ended {ended_count} active break(s).\n\nErrors:\n{error_text}",
+                )
+            else:
+                QMessageBox.information(
+                    dialog_parent,
+                    "Breaks Ended",
+                    f"Successfully ended {ended_count} active break(s).",
+                )
+            return ended_count > 0
+        except Exception as exc:
+            QMessageBox.critical(dialog_parent, "Error", f"Error ending active breaks: {exc}")
+            return False
 
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
@@ -787,11 +939,19 @@ class NFCReaderGUI(QMainWindow):
             else:
                 self.show_error_message(message)
 
-    def _print_pass_async(self, student_name, student_id, pass_type, location=None, details=None):
+    def _print_pass_async(self, student_name, student_id, pass_type, location=None, details=None, on_done=None):
         """Print a hall pass on a background thread so USB I/O cannot freeze the UI."""
         printer = getattr(self, "printer", None)
         if printer is None:
+            if on_done is not None:
+                on_done(False, "Printer is not available.")
             return
+
+        token = None
+        if on_done is not None:
+            self._pass_print_token += 1
+            token = self._pass_print_token
+            self._pass_print_callback = on_done
 
         def work():
             try:
@@ -802,15 +962,29 @@ class NFCReaderGUI(QMainWindow):
                     location=location,
                     details=details,
                 )
-                if not printed:
+                if printed:
+                    ok, reason = True, ""
+                else:
+                    ok = False
                     reason = getattr(printer, "last_error", "") or "printer not responding"
                     print(f"[PRINTER] Pass was not printed: {reason}")
-                    self.printer_failed.emit(f"Pass did not print: {reason}")
             except Exception as e:
+                ok, reason = False, str(e)
                 print(f"[PRINTER] Background print failed: {e}")
-                self.printer_failed.emit(f"Pass did not print: {e}")
+            if token is not None:
+                self.pass_print_finished.emit(token, ok, reason)
+            elif not ok:
+                self.printer_failed.emit(f"Pass did not print: {reason}")
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_pass_print_finished(self, token, ok, reason):
+        if token != self._pass_print_token:
+            return
+        callback = self._pass_print_callback
+        self._pass_print_callback = None
+        if callback:
+            callback(ok, reason)
 
     def _is_repeated_visit_action(self, visit_type, identifier):
         """Ignore duplicate card reads/button submissions that would toggle a visit twice."""
@@ -1087,65 +1261,107 @@ class NFCReaderGUI(QMainWindow):
                     uid = self.parse_uid(data)
                     print(f"[DEBUG] Parsed UID: {uid}")
                     if uid:
-                        # Check if add student overlay is open
-                        if hasattr(self, 'add_student_overlay') and self.add_student_overlay.isVisible():
-                            print(f"[DEBUG] Auto-filling NFC UID in add student overlay: {uid}")
-                            self.add_student_overlay.auto_fill_nfc_uid(uid)
-                            return
-                        
-                        if self.bathroom_overlay.isVisible():
-                            print(f"[DEBUG] Processing bathroom entry with UID: {uid}")
-                            self.bathroom_overlay.process_card(uid)
-                            return
-                        
-                        if self.nurse_overlay.isVisible():
-                            print(f"[DEBUG] Processing nurse entry with UID: {uid}")
-                            self.nurse_overlay.process_card(uid)
-                            return
-                        
-                        if self.water_overlay.isVisible():
-                            print(f"[DEBUG] Processing water entry with UID: {uid}")
-                            self.water_overlay.process_card(uid)
-                            return
-
-                        if self.guidance_overlay.isVisible():
-                            print(f"[DEBUG] Processing guidance entry with UID: {uid}")
-                            self.guidance_overlay.process_card(uid)
-                            return
-
-                        if self.pass_out_overlay.isVisible():
-                            if self.pass_out_overlay.is_awaiting_student():
-                                print(f"[DEBUG] Pass Out student card UID: {uid}")
-                                self.pass_out_overlay.process_card(uid)
-                            return
-
-                        # Dismiss an open break picker before processing new tap
-                        if self.break_picker_overlay.isVisible():
-                            self.break_picker_overlay.hide()
-                        
-                        # Show break-type picker for the student
-                        print(f"[DEBUG] Processing NFC tap with UID: {uid}")
-                        self.current_student_id = uid
-                        result = self.db.get_student_by_uid(uid)
-                        if result:
-                            student_id, student_name = result
-                            print(f"[DEBUG] Found student: {student_name} (ID: {student_id})")
-                            self.break_picker_overlay.show_for_student(
-                                student_name, nfc_uid=uid, student_id=student_id
-                            )
-                        else:
-                            print(f"[DEBUG] Unknown student with UID: {uid}")
-                            self.show_prompt_message(f"Unknown Card (UID: {uid})\nChecking for students to link...")
-                            unassigned_students = self.db.get_students_without_nfc_uid()
-                            if unassigned_students:
-                                print(f"[DEBUG] Found {len(unassigned_students)} students without NFC UIDs, showing selection overlay")
-                                self.student_selection_overlay.show_overlay(uid)
-                            else:
-                                print(f"[DEBUG] No students without NFC UIDs found")
-                                self.show_prompt_message(f"Unknown Student (UID: {uid})\nNo unassigned students available")
+                        self._handle_card(uid)
         except Exception as e:
             print(f"[SERIAL] Error reading serial: {e}")
             self._attempt_reconnect()
+
+    def _modal_dialog_open(self):
+        return QApplication.activeModalWidget() is not None
+
+    def _open_visit_overlay(self):
+        for overlay in (
+            self.bathroom_overlay,
+            self.nurse_overlay,
+            self.water_overlay,
+            self.guidance_overlay,
+        ):
+            if overlay.isVisible():
+                return overlay
+        return None
+
+    def _handle_card(self, uid):
+        """Route one card tap. The teacher card is recognized before a student."""
+        if self._modal_dialog_open() or self.password_overlay.isVisible():
+            return
+
+        teacher = self.is_teacher_card(uid)
+
+        if self.add_student_overlay.isVisible():
+            if teacher:
+                self.add_student_overlay.show_message("This card is the teacher card.")
+                return
+            self.add_student_overlay.auto_fill_nfc_uid(uid)
+            return
+
+        if self.student_selection_overlay.isVisible():
+            if teacher:
+                self.student_selection_overlay.show_message("This card is the teacher card.")
+            return
+
+        if self.settings_overlay.isVisible():
+            if self.settings_overlay.is_enroll_armed():
+                self.settings_overlay.accept_teacher_card_tap(uid)
+            return
+
+        visit = self._open_visit_overlay()
+        if visit is not None:
+            if teacher:
+                if self._accept_teacher_toggle():
+                    visit.hide()
+                    self.teacher_menu.show_overlay()
+                return
+            visit.process_card(uid)
+            return
+
+        if self.pass_out_overlay.isVisible():
+            if teacher:
+                if self._accept_teacher_toggle():
+                    self.pass_out_overlay.hide()
+                    self.teacher_menu.hide()
+                return
+            if self.pass_out_overlay.is_awaiting_student():
+                self.pass_out_overlay.process_card(uid)
+            return
+
+        if self.teacher_menu.isVisible():
+            if self.teacher_menu.is_printing():
+                return
+            if teacher and self._accept_teacher_toggle():
+                self.teacher_menu.hide()
+            return
+
+        if self.break_picker_overlay.isVisible():
+            if teacher:
+                if self._accept_teacher_toggle():
+                    self.break_picker_overlay.hide()
+                    self.teacher_menu.show_overlay()
+                return
+            self.break_picker_overlay.hide()
+
+        if teacher:
+            self._open_teacher_menu()
+            return
+
+        print(f"[DEBUG] Processing NFC tap with UID: {uid}")
+        self.current_student_id = uid
+        result = self.db.get_student_by_uid(uid)
+        if result:
+            student_id, student_name = result
+            print(f"[DEBUG] Found student: {student_name} (ID: {student_id})")
+            self.break_picker_overlay.show_for_student(
+                student_name, nfc_uid=uid, student_id=student_id
+            )
+            return
+        print(f"[DEBUG] Unknown student with UID: {uid}")
+        self.show_prompt_message(f"Unknown Card (UID: {uid})\nChecking for students to link...")
+        unassigned_students = self.db.get_students_without_nfc_uid()
+        if unassigned_students:
+            print(f"[DEBUG] Found {len(unassigned_students)} students without NFC UIDs, showing selection overlay")
+            self.student_selection_overlay.show_overlay(uid)
+        else:
+            print(f"[DEBUG] No students without NFC UIDs found")
+            self.show_prompt_message(f"Unknown Student (UID: {uid})\nNo unassigned students available")
 
     def show_prompt_message(self, message, duration=None):
         """Show a temporary prompt; a new message safely replaces its timer."""

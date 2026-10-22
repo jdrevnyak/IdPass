@@ -10,6 +10,7 @@ DEFAULT_CONFIG = {
     "classroom_id": "",
     "classroom_label": "",
     "teacher_name": "",
+    "teacher_card_uid": "",
     "settings_pin": "1234",
     "printer_vendor_id": "0x0416",
     "printer_product_id": "0x5011",

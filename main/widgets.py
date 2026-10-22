@@ -152,6 +152,17 @@ def draw_glyph(painter, name, size, color, stroke=2.0):
             painter.rotate(i * 60)
             painter.drawRoundedRect(QRectF(-1.7, -11.4, 3.4, 3.8), 0.8, 0.8)
             painter.restore()
+    elif name == "stop":
+        painter.setBrush(QBrush(QColor(color)))
+        painter.setPen(QPen(QColor(color), stroke * 0.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawRoundedRect(QRectF(4.5, 4.5, 15, 15), 3.2, 3.2)
+    elif name == "printer":
+        painter.drawRect(QRectF(7.0, 2.2, 10.0, 6.4))
+        painter.drawRoundedRect(QRectF(3.0, 8.6, 18.0, 9.4), 1.6, 1.6)
+        painter.drawLine(QPointF(6.4, 13.4), QPointF(17.6, 13.4))
+        painter.drawLine(QPointF(8.2, 18.0), QPointF(8.2, 21.2))
+        painter.drawLine(QPointF(15.8, 18.0), QPointF(15.8, 21.2))
+        painter.drawLine(QPointF(6.2, 21.2), QPointF(17.8, 21.2))
 
     painter.restore()
 
@@ -208,14 +219,17 @@ class DestinationTile(QAbstractButton):
 
     _RADIUS = 14
 
-    def __init__(self, destination, parent=None):
+    def __init__(self, destination, parent=None, glyph=None, gradient=None, label=None):
         super().__init__(parent)
-        style = DESTINATION_STYLES[destination]
+        style = DESTINATION_STYLES.get(destination)
+        if style is None and (not glyph or not gradient):
+            raise KeyError(destination)
         self.destination = destination
-        self._glyph = style["glyph"]
-        self._gradient = style["gradient"]
+        self._glyph = glyph or style["glyph"]
+        self._gradient = gradient or style["gradient"]
+        self._fixed_label = label
         self._active = False
-        self.setText(destination)
+        self.setText(label or destination)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -240,6 +254,8 @@ class DestinationTile(QAbstractButton):
         return QSize(166, 180)
 
     def _label(self):
+        if self._fixed_label:
+            return self._fixed_label.upper()
         return f"END {self.destination}".upper() if self._active else self.destination.upper()
 
     def paintEvent(self, event):
@@ -343,14 +359,15 @@ class HomeScreen(QWidget):
     Pure presentation -- the application wires up behaviour by connecting to
     ``tiles``, ``prompt``, ``top_bar`` and ``system_pill``."""
 
-    DESTINATIONS = ("Bathroom", "Nurse", "Water", "Guidance", "Pass Out")
+    DESTINATIONS = ("Bathroom", "Nurse", "Water", "Guidance")
 
     # Tight padding so the card fills an 800x480 kiosk without a dark band.
     _BODY_MARGINS = (10, 8, 10, 8)
     _CARD_PAD = 12
     _GAP = 10
     _STATUS_H = 52
-    _VISIBLE_TILES = 4.4
+    # Four destinations fill the row. There is nothing off-screen to peek at.
+    _VISIBLE_TILES = 4
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -466,16 +483,22 @@ class HomeScreen(QWidget):
                 tile.setDown(False)
 
     def _size_tiles(self):
-        """Fit about four and a half tiles so the next one peeks in as a scroll hint."""
+        """Size every tile to an equal share of the row. Four tiles fill it exactly."""
         viewport = self._tile_scroll.viewport()
         count = len(self.tiles)
-        visible = min(float(count), self._VISIBLE_TILES)
-        tile_w = int((viewport.width() - self._GAP * (visible - 1)) / visible)
+        visible = min(float(count), float(self._VISIBLE_TILES))
+        tile_w = int((viewport.width() - self._GAP * (visible - 1)) / visible) if visible else 0
         for tile in self.tiles.values():
             tile.setFixedSize(tile_w, viewport.height())
         self._tile_host.setFixedSize(
-            tile_w * count + self._GAP * (count - 1), viewport.height()
+            tile_w * count + self._GAP * max(count - 1, 0), viewport.height()
         )
+        if count <= self._VISIBLE_TILES:
+            QScroller.ungrabGesture(self._tile_scroll.viewport())
+        else:
+            QScroller.grabGesture(
+                self._tile_scroll.viewport(), QScroller.LeftMouseButtonGesture
+            )
 
     def set_datetime_text(self, text):
         self.datetime_label.setText(text)
