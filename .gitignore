@@ -45,4 +45,5 @@ backup_*/
 # Temporary files
 *.tmp
 *.temp
+main/bathroom_line.json
 

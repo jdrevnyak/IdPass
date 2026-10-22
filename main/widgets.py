@@ -3,7 +3,8 @@ Custom widgets for the NFC Reader GUI application.
 """
 
 from PyQt5.QtWidgets import (QWidget, QFrame, QAbstractButton, QSizePolicy,
-                             QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QScroller)
+                             QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QScroller,
+                             QPushButton)
 from PyQt5.QtCore import QTimer, QTime, Qt, QRect, QRectF, QSize, QPointF, QEvent
 from PyQt5.QtGui import (QFont, QColor, QPainter, QPen, QBrush, QLinearGradient,
                          QPainterPath, QPolygonF, QFontMetrics)
@@ -242,8 +243,12 @@ class DestinationTile(QAbstractButton):
             self._active = active
             self.update()
 
-    def is_active(self):
-        return self._active
+    def set_fixed_label(self, label):
+        """Override the tile text. None restores the destination name."""
+        label = label or None
+        if label != self._fixed_label:
+            self._fixed_label = label
+            self.update()
 
     def setEnabled(self, enabled):
         super().setEnabled(enabled)
@@ -461,6 +466,19 @@ class HomeScreen(QWidget):
             f" border: 1px solid {THEME['pill_border']}; border-radius: 12px; padding: 6px 14px;"
         )
         status_row.addWidget(self.prompt, 1)
+
+        self.leave_line_btn = QPushButton("Leave")
+        self.leave_line_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        self.leave_line_btn.setFixedHeight(self._STATUS_H)
+        self.leave_line_btn.setMinimumWidth(110)
+        self.leave_line_btn.setCursor(Qt.PointingHandCursor)
+        self.leave_line_btn.setStyleSheet(
+            "QPushButton { background: #e2e8f0; color: #334155; border: none; "
+            "border-radius: 12px; padding: 0 16px; }"
+            "QPushButton:pressed { background: #cbd5e1; }"
+        )
+        self.leave_line_btn.hide()
+        status_row.addWidget(self.leave_line_btn, 0)
 
         self.system_pill = StatusPill("System Ready")
         self.system_pill.setFixedHeight(self._STATUS_H)

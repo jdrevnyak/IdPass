@@ -5,6 +5,7 @@ This module contains the main application window and orchestrates the different
 components imported from other modules.
 """
 
+import math
 import sys
 import os
 import serial
@@ -37,6 +38,8 @@ from device_config import load_device_config, update_device_config
 from network_status import get_wifi_info
 from printer import ThermalPrinter
 from student_db import normalize_nfc_uid, normalize_student_id_key, PERIODS
+from bathroom_line import BathroomLine
+from bathroom_line_ui import BathroomLinePlaceOverlay, BathroomLineManagerOverlay
 
 
 class NFCReaderGUI(QMainWindow):
@@ -161,6 +164,7 @@ class NFCReaderGUI(QMainWindow):
         self.keypad_overlay = KeypadOverlay(self)
         # The analog clock is gone, so the status pill is the manual-entry target.
         self.prompt.installEventFilter(self)
+        self.home.leave_line_btn.clicked.connect(self._leave_front_of_bathroom_line)
         self.settings_overlay = SettingsOverlay(self)
         self.password_overlay = PasswordOverlay(self)
         self.password_overlay.authenticated.connect(self._show_settings_overlay)
@@ -196,6 +200,8 @@ class NFCReaderGUI(QMainWindow):
         # Break-type picker overlay (shown on NFC tap / manual entry)
         self.break_picker_overlay = BreakTypePickerOverlay(self)
         self.break_picker_overlay.break_selected.connect(self._on_break_type_selected)
+        self.line_place_overlay = BathroomLinePlaceOverlay(self)
+        self.line_manager_overlay = BathroomLineManagerOverlay(self)
 
         # Overlays exist before the reader can deliver a card.
         self.auto_connect_esp32()
@@ -265,6 +271,8 @@ class NFCReaderGUI(QMainWindow):
         self.classroom_label = (self.device_config.get('classroom_label') or '').strip()
         self.teacher_name = (self.device_config.get('teacher_name') or '').strip()
         self.teacher_card_uid = normalize_nfc_uid(self.device_config.get('teacher_card_uid') or '')
+        if not hasattr(self, "bathroom_line"):
+            self.bathroom_line = BathroomLine.load(self.classroom_id)
 
         if refresh_prompt and hasattr(self, 'prompt'):
             self.refresh_classroom_prompt()
@@ -295,6 +303,8 @@ class NFCReaderGUI(QMainWindow):
             teacher_name=teacher_name.strip()
         )
         self._set_classroom_attributes(updated_config)
+        if hasattr(self, "bathroom_line"):
+            self.bathroom_line.adopt(self.classroom_id)
         if hasattr(self, 'db'):
             try:
                 self.db.update_classroom_context(updated_config)
@@ -581,6 +591,13 @@ class NFCReaderGUI(QMainWindow):
 
         except Exception as e:
             print(f"[AUTO] Error auto-ending breaks during passing: {e}")
+        finally:
+            try:
+                self.bathroom_line.clear()
+                self.bathroom_line.save()
+                self._refresh_outing_ui()
+            except Exception as e:
+                print(f"[AUTO] Error clearing the bathroom line: {e}")
 
     def _determine_current_period(self, now: datetime) -> str:
         """Return the current period label or Passing/Before/After School."""
@@ -621,6 +638,38 @@ class NFCReaderGUI(QMainWindow):
         """Show the keypad overlay for manual ID entry"""
         self.keypad_overlay.show_overlay()
 
+    def _present_student(self, name, nfc_uid, student_id):
+        """A known student tapped or entered an ID."""
+        if self.keypad_overlay.isVisible():
+            self.keypad_overlay.hide()
+        entry = self._line_entry(student_id, nfc_uid, name)
+        their_turn = self.bathroom_line.is_front(entry) and not self._bathroom_is_busy()
+        if their_turn:
+            if self._is_bathroom_restricted(datetime.now()):
+                self.show_error_message(
+                    "You can't use the bathroom during the first or last 10 minutes of class."
+                )
+                return
+            if nfc_uid:
+                self.process_bathroom_entry(nfc_uid=nfc_uid)
+            else:
+                self.process_bathroom_entry(student_id=student_id)
+            return
+        if self.bathroom_line.contains(entry):
+            self._show_line_place(entry)
+            return
+        self.break_picker_overlay.show_for_student(
+            name, nfc_uid=nfc_uid or "", student_id=student_id or ""
+        )
+
+    def _refresh_line_views(self):
+        menu = getattr(self, "teacher_menu", None)
+        if menu is not None and menu.isVisible():
+            menu._refresh_status()
+        manager = getattr(self, "line_manager_overlay", None)
+        if manager is not None and manager.isVisible():
+            manager._rebuild()
+
     def handle_manual_id_entry(self, student_id):
         """Handle manual ID entry from keypad -- show break-type picker."""
         student_id = normalize_student_id_key(student_id)
@@ -631,9 +680,7 @@ class NFCReaderGUI(QMainWindow):
         if result:
             nfc_uid, student_name = result
             print(f"[DEBUG] Manual entry resolved student_id {student_id} to nfc_uid {nfc_uid}")
-            self.break_picker_overlay.show_for_student(
-                student_name, nfc_uid=nfc_uid or "", student_id=student_id
-            )
+            self._present_student(student_name, nfc_uid or "", student_id)
         else:
             self.show_prompt_message(f"No student found with ID: {student_id}")
 
@@ -859,12 +906,116 @@ class NFCReaderGUI(QMainWindow):
             QMessageBox.critical(dialog_parent, "Error", f"Error ending active breaks: {exc}")
             return False
 
+    def _line_entry(self, student_id, nfc_uid, name):
+        return {
+            "student_id": normalize_student_id_key(student_id or ""),
+            "nfc_uid": normalize_nfc_uid(nfc_uid or ""),
+            "name": name or "Student",
+        }
+
+    def _bathroom_is_busy(self):
+        try:
+            return any(o.get("type") == "Bathroom" for o in (self.db.get_active_outings() or []))
+        except Exception:
+            return False
+
+    def _can_start_bathroom(self, entry, bathroom_busy):
+        return (not bathroom_busy) and (
+            self.bathroom_line.count() == 0 or self.bathroom_line.is_front(entry)
+        )
+
+    def _on_non_bathroom_outing(self, entry):
+        try:
+            outings = self.db.get_active_outings() or []
+        except Exception:
+            return False
+        card = entry.get("nfc_uid") or ""
+        student_id = entry.get("student_id") or ""
+        for outing in outings:
+            if outing.get("type") == "Bathroom":
+                continue
+            uid = outing.get("student_uid") or ""
+            if card and uid == card:
+                return True
+            if student_id and uid == student_id:
+                return True
+        return False
+
+    def _show_line_place(self, entry):
+        if self.bathroom_overlay.isVisible():
+            self.bathroom_overlay.hide()
+        place = self.bathroom_line.place(entry)
+        if place:
+            self.line_place_overlay.show_place(entry, place)
+        self._refresh_outing_ui()
+
+    def _start_bathroom_from_line(self, identifier, entry, student_name_db, student_id_db, nfc_uid, student_id):
+        success, message = self.db.start_bathroom_break(identifier)
+        if not success:
+            self.show_error_message(message)
+            return
+        ended_existing_break = "previous break ended" in str(message).lower()
+        if ended_existing_break:
+            self.show_prompt_message("Bathroom break ended!")
+        else:
+            self.bathroom_line.remove_matching(entry)
+            self.bathroom_line.save()
+            self.show_prompt_message("Bathroom break started!")
+        self._refresh_outing_ui()
+        QTimer.singleShot(3000, self.bathroom_overlay.hide)
+        if not ended_existing_break:
+            print_name = student_name_db
+            print_id = student_id_db if nfc_uid else student_id
+            print_location = self.classroom_label if self.classroom_label else (
+                f"Classroom {self.classroom_id}" if self.classroom_id else None
+            )
+            self._print_pass_async(print_name, print_id, "BATHROOM PASS", print_location)
+
+    def _drop_from_bathroom_line(self, student_id, nfc_uid):
+        entry = self._line_entry(student_id, nfc_uid, "")
+        if self.bathroom_line.remove_matching(entry):
+            self.bathroom_line.save()
+            self._refresh_outing_ui()
+
+    def bathroom_picker_label(self, nfc_uid, student_id):
+        """Join line when this student cannot start the bathroom yet."""
+        entry = self._line_entry(student_id, nfc_uid, "")
+        if self._can_start_bathroom(entry, self._bathroom_is_busy()):
+            return None
+        return "Join line"
+
+    def leave_bathroom_line(self, entry):
+        if self.bathroom_line.remove_matching(entry):
+            self.bathroom_line.save()
+        self._refresh_outing_ui()
+
+    def _leave_front_of_bathroom_line(self):
+        if self.bathroom_line.count() == 0:
+            return
+        self.bathroom_line.remove_index(0)
+        self.bathroom_line.save()
+        self._refresh_outing_ui()
+
+    def remove_bathroom_line_index(self, index):
+        self.bathroom_line.remove_index(index)
+        self.bathroom_line.save()
+        self._refresh_outing_ui()
+
+    def clear_bathroom_line(self):
+        self.bathroom_line.clear()
+        self.bathroom_line.save()
+        self._refresh_outing_ui()
+
+    def show_bathroom_line_manager(self):
+        self.line_manager_overlay.show_overlay()
+
     def process_bathroom_entry(self, student_id=None, nfc_uid=None):
         """Process bathroom break entry/exit"""
         # Unified logic: use nfc_uid if available, else use student_id
         student_name_db = "Student"
         identifier = None
         student_id_db = None
+        nfc_uid_db = None
         
         if nfc_uid:
             result = self.db.get_student_by_uid(nfc_uid)
@@ -888,32 +1039,17 @@ class NFCReaderGUI(QMainWindow):
             self.show_error_message("No student information provided.")
             return
 
-        if self._is_repeated_visit_action("Bathroom", identifier):
-            return
-
         print(f"[DEBUG] Bathroom entry using identifier: {identifier}")
         is_on_break = self.db.is_on_break(identifier)
-
-        # Disallow starting new breaks during restricted windows
-        # But allow ending existing breaks
-        if not is_on_break and self._is_bathroom_restricted(datetime.now()):
-            self.show_error_message(
-                "You can't use the bathroom during the first or last 10 minutes of class."
-            )
-            return
-
-        if not is_on_break:
-            try:
-                bathroom_busy = any(
-                    o.get("type") == "Bathroom" for o in (self.db.get_active_outings() or [])
-                )
-            except Exception:
-                bathroom_busy = False
-            if bathroom_busy:
-                self.show_error_message("Someone is already in the bathroom.")
-                return
+        entry = self._line_entry(
+            student_id_db or student_id or "",
+            nfc_uid or nfc_uid_db or "",
+            student_name_db,
+        )
 
         if is_on_break:
+            if self._is_repeated_visit_action("Bathroom", identifier):
+                return
             success, message = self.db.end_bathroom_break(identifier)
             if success:
                 self.show_prompt_message("Bathroom break ended!")
@@ -921,23 +1057,40 @@ class NFCReaderGUI(QMainWindow):
                 QTimer.singleShot(3000, self.bathroom_overlay.hide)
             else:
                 self.show_error_message(message)
-        else:
-            success, message = self.db.start_bathroom_break(identifier)
-            if success:
-                ended_existing_break = "previous break ended" in str(message).lower()
-                if ended_existing_break:
-                    self.show_prompt_message("Bathroom break ended!")
-                else:
-                    self.show_prompt_message("Bathroom break started!")
-                self._refresh_outing_ui()
-                QTimer.singleShot(3000, self.bathroom_overlay.hide)
-                if not ended_existing_break:
-                    print_name = student_name_db
-                    print_id = student_id_db if nfc_uid else student_id
-                    print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
-                    self._print_pass_async(print_name, print_id, "BATHROOM PASS", print_location)
+            return
+
+        if self._on_non_bathroom_outing(entry):
+            self.show_error_message("End your other visit before using the bathroom.")
+            return
+
+        bathroom_busy = self._bathroom_is_busy()
+        if self._can_start_bathroom(entry, bathroom_busy):
+            if self._is_bathroom_restricted(datetime.now()):
+                self.show_error_message(
+                    "You can't use the bathroom during the first or last 10 minutes of class."
+                )
+                return
+            if self._is_repeated_visit_action("Bathroom", identifier):
+                return
+            self._start_bathroom_from_line(identifier, entry, student_name_db, student_id_db, nfc_uid, student_id)
+            return
+
+        if self._is_bathroom_restricted(datetime.now()):
+            if self.bathroom_line.contains(entry):
+                self._show_line_place(entry)
             else:
-                self.show_error_message(message)
+                self.show_error_message(
+                    "You can't use the bathroom during the first or last 10 minutes of class."
+                )
+            return
+
+        if self.bathroom_line.contains(entry):
+            self._show_line_place(entry)
+            return
+        self.bathroom_line.join(entry)
+        self.bathroom_line.save()
+        self._show_line_place(entry)
+        self._refresh_outing_ui()
 
     def _print_pass_async(self, student_name, student_id, pass_type, location=None, details=None, on_done=None):
         """Print a hall pass on a background thread so USB I/O cannot freeze the UI."""
@@ -1070,11 +1223,9 @@ class NFCReaderGUI(QMainWindow):
                 QTimer.singleShot(3000, self.nurse_overlay.hide)
 
                 if not ended_existing_visit:
-                    # Use the retrieved name and correct student ID
                     print_name = student_name_db
                     print_id = student_id_db if nfc_uid else student_id
-
-                    # Print only when a new visit was actually started.
+                    self._drop_from_bathroom_line(print_id, nfc_uid or "")
                     print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
                     self._print_pass_async(print_name, print_id, "NURSE PASS", print_location)
 
@@ -1140,11 +1291,9 @@ class NFCReaderGUI(QMainWindow):
                 QTimer.singleShot(3000, self.water_overlay.hide)
 
                 if not ended_existing_visit:
-                    # Use the retrieved name and correct student ID
                     print_name = student_name_db
                     print_id = student_id_db if nfc_uid else student_id
-
-                    # Print only when a new visit was actually started.
+                    self._drop_from_bathroom_line(print_id, nfc_uid or "")
                     print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
                     self._print_pass_async(print_name, print_id, "WATER PASS", print_location)
             else:
@@ -1209,11 +1358,9 @@ class NFCReaderGUI(QMainWindow):
                 QTimer.singleShot(3000, self.guidance_overlay.hide)
 
                 if not ended_existing_visit:
-                    # Use the retrieved name and correct student ID
                     print_name = student_name_db
                     print_id = student_id_db if nfc_uid else student_id
-
-                    # Print only when a new visit was actually started.
+                    self._drop_from_bathroom_line(print_id, nfc_uid or "")
                     print_location = self.classroom_label if self.classroom_label else (f"Classroom {self.classroom_id}" if self.classroom_id else None)
                     self._print_pass_async(print_name, print_id, "GUIDANCE PASS", print_location)
             else:
@@ -1304,6 +1451,18 @@ class NFCReaderGUI(QMainWindow):
                 self.settings_overlay.accept_teacher_card_tap(uid)
             return
 
+        if self.line_manager_overlay.isVisible():
+            if teacher and self._accept_teacher_toggle():
+                self.line_manager_overlay.hide()
+            return
+
+        if self.line_place_overlay.isVisible():
+            self.line_place_overlay.hide()
+            if teacher:
+                if self._accept_teacher_toggle():
+                    self.teacher_menu.show_overlay()
+                return
+
         visit = self._open_visit_overlay()
         if visit is not None:
             if teacher:
@@ -1349,9 +1508,7 @@ class NFCReaderGUI(QMainWindow):
         if result:
             student_id, student_name = result
             print(f"[DEBUG] Found student: {student_name} (ID: {student_id})")
-            self.break_picker_overlay.show_for_student(
-                student_name, nfc_uid=uid, student_id=student_id
-            )
+            self._present_student(student_name, uid, student_id)
             return
         print(f"[DEBUG] Unknown student with UID: {uid}")
         self.show_prompt_message(f"Unknown Card (UID: {uid})\nChecking for students to link...")
@@ -1390,18 +1547,39 @@ class NFCReaderGUI(QMainWindow):
             print(f"[WIFI] Could not read status: {e}")
 
     def update_prompt_status(self):
-        """If someone is out, show their name and elapsed time in the prompt."""
+        """Show who is out, who is waiting, and whose bathroom turn it is."""
         try:
+            now = datetime.now()
+            bathroom_free = not self._bathroom_is_busy()
+            _expired, changed = self.bathroom_line.tick(
+                now, bathroom_free, self._is_bathroom_restricted(now)
+            )
+            if changed:
+                self.bathroom_line.save()
+                self._refresh_line_views()
+            remaining = self.bathroom_line.remaining_seconds(now, bathroom_free)
+            if hasattr(self, "home"):
+                self.home.leave_line_btn.setVisible(remaining is not None)
+
             try:
                 outings = self.db.get_active_outings()
             except Exception as exc:
                 print(f"[PROMPT] Unable to fetch active outings: {exc}")
                 outings = []
 
-            # Always refresh tiles / system pill immediately; only the prompt text
-            # is deferred while a temporary success/error message is showing.
             self._update_visit_button_labels(outings)
             if self._prompt_override_active:
+                return
+
+            waiting = self.bathroom_line.count()
+            if remaining is not None:
+                seconds_left = max(0, math.ceil(remaining))
+                minutes, seconds = divmod(seconds_left, 60)
+                name = self.bathroom_line.front_name() or "Student"
+                text = f"{name}  {minutes}:{seconds:02d}"
+                if waiting:
+                    text += f"  ·  {waiting} waiting"
+                self.prompt.setText(text)
                 return
 
             if outings:
@@ -1414,11 +1592,15 @@ class NFCReaderGUI(QMainWindow):
                 seconds = int(elapsed.total_seconds() % 60)
                 label = active.get('type', 'Out')
                 student_name = active.get('student_name', 'Student')
-                self.prompt.setText(f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}")
+                text = f"{label}: {student_name}   Elapsed {minutes:02d}:{seconds:02d}"
+                if waiting:
+                    text += f"  ·  {waiting} waiting"
+                self.prompt.setText(text)
+            elif waiting:
+                self.prompt.setText(f"{waiting} waiting")
             else:
                 self.prompt.setText(self._base_prompt_text if hasattr(self, '_base_prompt_text') else self.BASE_PROMPT)
         except Exception as exc:
-            # A bad outing row must never take down the Qt event loop.
             print(f"[PROMPT] update_prompt_status failed: {exc}")
 
     def _refresh_outing_ui(self):
@@ -1432,11 +1614,15 @@ class NFCReaderGUI(QMainWindow):
         active_types = {o.get("type") for o in outings}
         for destination, tile in self.destination_tiles.items():
             tile.set_active(destination in active_types)
-            # Bathroom stays tappable so the student who is out can END it.
-            # A second bathroom start is blocked in process_bathroom_entry /
-            # the NFC picker. Water is never locked by another outing.
             if destination in ("Bathroom", "Water"):
                 tile.setEnabled(True)
+        bathroom = self.destination_tiles.get("Bathroom")
+        if bathroom is not None:
+            if "Bathroom" in active_types or self.bathroom_line.count():
+                bathroom.set_fixed_label("Join line")
+                bathroom.set_active(False)
+            else:
+                bathroom.set_fixed_label(None)
 
         count = len(outings)
         if count:

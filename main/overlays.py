@@ -2374,8 +2374,24 @@ class TeacherMenuOverlay(QWidget):
         self.status_pill = StatusPill("System Ready")
         self.status_pill.setFixedHeight(52)
         pill_row.addWidget(self.status_pill, 0)
+        self.waiting_label = QLabel("No one waiting")
+        self.waiting_label.setAlignment(Qt.AlignCenter)
+        self.waiting_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.waiting_label.setStyleSheet("color: #475569;")
+        pill_row.addWidget(self.waiting_label, 0)
         pill_row.addStretch(1)
         card_box.addLayout(pill_row)
+
+        self.line_btn = QPushButton("Bathroom line")
+        self.line_btn.setMinimumHeight(44)
+        self.line_btn.setFont(QFont("Arial", 14, QFont.Bold))
+        self.line_btn.setStyleSheet(
+            "QPushButton { background: #e2e8f0; color: #334155; border: none; border-radius: 12px; }"
+            "QPushButton:pressed { background: #cbd5e1; }"
+            "QPushButton:disabled { background: #f1f5f9; color: #94a3b8; }"
+        )
+        self.line_btn.clicked.connect(self._open_bathroom_line)
+        card_box.addWidget(self.line_btn)
         root.addWidget(card, 1)
 
         self.cancel_btn = QPushButton("Cancel")
@@ -2423,6 +2439,8 @@ class TeacherMenuOverlay(QWidget):
         for tile in self._tiles:
             tile.setEnabled(enabled)
         self.cancel_btn.setEnabled(enabled)
+        if hasattr(self, "line_btn"):
+            self.line_btn.setEnabled(enabled)
 
     def _refresh_status(self):
         if self._printing:
@@ -2437,6 +2455,19 @@ class TeacherMenuOverlay(QWidget):
             self.status_pill.set_state("busy", f"{count} {noun} Out")
         else:
             self.status_pill.set_state("ok", "System Ready")
+        waiting = 0
+        line = getattr(self.parent, "bathroom_line", None)
+        if line is not None:
+            waiting = line.count()
+        if waiting:
+            self.waiting_label.setText(f"{waiting} waiting")
+        else:
+            self.waiting_label.setText("No one waiting")
+
+    def _open_bathroom_line(self):
+        if self._printing:
+            return
+        self.parent.show_bathroom_line_manager()
 
     def _end_outings(self):
         if self._printing:
@@ -3351,8 +3382,15 @@ class BreakTypePickerOverlay(QWidget):
             for visit_type, btn in self._type_buttons.items():
                 btn.setText(visit_type)
                 btn.setVisible(True)
-                locked = visit_type == "Bathroom" and bathroom_busy
-                btn.setEnabled(not locked)
+                join_label = None
+                if visit_type == "Bathroom" and self.parent and hasattr(self.parent, "bathroom_picker_label"):
+                    join_label = self.parent.bathroom_picker_label(nfc_uid, student_id)
+                if join_label:
+                    btn.setText(join_label)
+                    btn.setEnabled(True)
+                else:
+                    locked = visit_type == "Bathroom" and bathroom_busy
+                    btn.setEnabled(not locked)
         if self.parent:
             self.setGeometry(self.parent.rect())
         self.setVisible(True)

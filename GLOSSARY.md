@@ -24,6 +24,10 @@ _Avoid_: Settings
 A recorded visit that takes a student out of this classroom. Bathroom, Nurse, Water, and Guidance are outings.
 _Avoid_: Break, hall pass, visit
 
+**Bathroom line**:
+The ordered list of students waiting to start a bathroom outing in this classroom. A place in line is not an outing.
+_Avoid_: Queue, waitlist
+
 **Pass Out**:
 A printed permission for one named student to go to one named room. It is not an outing.
 _Avoid_: Hall pass, outing
