@@ -1477,17 +1477,13 @@ class NFCReaderGUI(QMainWindow):
             if teacher:
                 if self._accept_teacher_toggle():
                     self.pass_out_overlay.hide()
-                    self.teacher_menu.hide()
                 return
             if self.pass_out_overlay.is_awaiting_student():
                 self.pass_out_overlay.process_card(uid)
             return
 
         if self.teacher_menu.isVisible():
-            if self.teacher_menu.is_printing():
-                return
-            if teacher and self._accept_teacher_toggle():
-                self.teacher_menu.hide()
+            # A card left on the reader scans again. Cancel is the close control.
             return
 
         if self.break_picker_overlay.isVisible():
