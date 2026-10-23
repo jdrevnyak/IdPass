@@ -18,11 +18,12 @@
  * GPIO 16 (RX2) -> GPIO 15 (RXD) on RPi (Physical Pin 10)
  * GND           -> GND on RPi (Physical Pin 6)
  * 
- * Note: Make sure to enable UART on Raspberry Pi:
+ * The IdPass app enables this UART when it starts, then reboots once
+ * if the Pi was not already set that way. Manual equivalent:
  * 1. sudo raspi-config -> Interface Options -> Serial Port
  * 2. Disable login shell over serial: NO
  * 3. Enable serial port hardware: YES
- * 4. Add 'enable_uart=1' to /boot/config.txt
+ * 4. That writes enable_uart=1 (Pi 5 also needs dtoverlay=uart0-pi5)
  * 5. Reboot Raspberry Pi
  */
 

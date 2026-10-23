@@ -1708,6 +1708,9 @@ def _apply_app_dialog_palette(app):
 
 def main():
     """Main entry point for the application"""
+    from reader_uart import ensure_reader_uart
+    ensure_reader_uart()
+
     app = QApplication(sys.argv)
     _apply_app_dialog_palette(app)
     window = NFCReaderGUI()
