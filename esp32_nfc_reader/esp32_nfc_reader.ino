@@ -46,8 +46,11 @@ void setup() {
   // Initialize Serial for debugging (USB)
   Serial.begin(115200);
 
-  // Initialize UART2 for communication with Raspberry Pi
+  // Initialize UART2 for communication with Raspberry Pi.
+  // Default Stream timeout is 1s. A byte from the Pi with no newline would
+  // stall card polling for that whole second, so the reader appears dead.
   Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  Serial2.setTimeout(10);
 
   Serial.println("\n\nESP32 RC522 NFC Reader Starting...");
   Serial.println("Initializing SPI...");
@@ -155,16 +158,46 @@ void readCardData() {
   }
 }
 
-void loop() {
-  // Check for incoming data from Raspberry Pi on UART2
-  if (Serial2.available()) {
-    String incomingData = Serial2.readStringUntil('\n');
-    incomingData.trim();
-    if (incomingData.length() > 0) {
-      Serial.println("Received from RPi: " + incomingData);
+// Some RC522 boards stop answering after they have been powered for a while.
+// The version register then reads 0x00 or 0xFF until the chip is reset.
+void recoverReaderIfWedged() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 1000) {
+    return;
+  }
+  lastCheck = millis();
+
+  byte version = mfrc522.PCD_ReadRegister(MFRC522::VersionReg);
+  if (version != 0x00 && version != 0xFF) {
+    return;
+  }
+
+  Serial.println("RC522 stopped responding. Resetting reader.");
+  Serial2.println("RC522 stopped responding. Resetting reader.");
+  mfrc522.PCD_Init();
+}
+
+void drainPiSerial() {
+  // Never wait for a newline. Card polling has to keep running.
+  static String line;
+  while (Serial2.available()) {
+    char c = Serial2.read();
+    if (c == '\n') {
+      line.trim();
+      if (line.length() > 0) {
+        Serial.println("Received from RPi: " + line);
+      }
+      line = "";
+    } else if (c != '\r' && line.length() < 160) {
+      line += c;
     }
   }
-  
+}
+
+void loop() {
+  drainPiSerial();
+  recoverReaderIfWedged();
+
   // Reset the loop if no new card present on the sensor/reader
   if (!mfrc522.PICC_IsNewCardPresent()) {
     return;

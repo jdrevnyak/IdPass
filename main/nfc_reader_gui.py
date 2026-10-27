@@ -356,9 +356,10 @@ class NFCReaderGUI(QMainWindow):
         print("[INFO] Starting ESP32 auto-connect...")
         try:
             import os
-            # UART ports for Raspberry Pi (ESP32 connected via UART)
-            # Prioritize the working port first (/dev/ttyAMA0)
-            uart_ports = ['/dev/ttyAMA0', '/dev/serial0', '/dev/ttyAMA10', '/dev/ttyS0']
+            # Header UART only. /dev/ttyAMA10 is the Pi 5 debug header and
+            # stays present even when the reader is on GPIO 14/15. Opening it
+            # counts as "connected" and then no card is ever read.
+            uart_ports = ['/dev/ttyAMA0', '/dev/serial0', '/dev/ttyS0']
             print(f"[INFO] Will try ESP32 ports: {uart_ports}")
 
             for port in uart_ports:
@@ -1474,9 +1475,9 @@ class NFCReaderGUI(QMainWindow):
             return
 
         if self.pass_out_overlay.isVisible():
+            # The teacher card that opened this screen is often still in range.
+            # Cancel closes it. A student card is the scan this screen is waiting for.
             if teacher:
-                if self._accept_teacher_toggle():
-                    self.pass_out_overlay.hide()
                 return
             if self.pass_out_overlay.is_awaiting_student():
                 self.pass_out_overlay.process_card(uid)
