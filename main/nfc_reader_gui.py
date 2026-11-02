@@ -1615,9 +1615,10 @@ class NFCReaderGUI(QMainWindow):
                 tile.setEnabled(True)
         bathroom = self.destination_tiles.get("Bathroom")
         if bathroom is not None:
-            if "Bathroom" in active_types or self.bathroom_line.count():
+            bathroom_out = "Bathroom" in active_types
+            if bathroom_out or self.bathroom_line.count():
                 bathroom.set_fixed_label("Join line")
-                bathroom.set_active(False)
+                bathroom.set_active(bathroom_out)
             else:
                 bathroom.set_fixed_label(None)
 
